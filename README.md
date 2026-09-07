@@ -15,14 +15,14 @@ Trello board and any project.
 
 | File | What |
 |---|---|
-| `.claude/trello-mcp/server.mjs` | Protocol layer — stdin/stdout JSON-RPC framing, dispatch, process lifecycle |
-| `.claude/trello-mcp/api.mjs` | The Trello HTTP layer |
-| `.claude/trello-mcp/tools-cards.mjs` | Card-level tools (find/get/update/comment/checklist/...) |
-| `.claude/trello-mcp/tools-hierarchy.mjs` | Board/list/attachment/hierarchy tools |
-| `.claude/trello-mcp/numbering.mjs` | Card-number parsing/derivation helpers |
-| `.claude/trello-mcp/prompts.mjs` | MCP `prompts/list` + `prompts/get`, including `create-task` (points at the two-phase draft→push flow below) |
-| `.claude/trello-mcp/resources.mjs` | MCP `resources/list` + `resources/read` (`trello://board/<id>/lists`, `.../activity`) |
-| `.claude/trello-mcp/server.test.mjs` | Full protocol + tool test suite — mocks the HTTP layer, no live Trello calls |
+| `.claude/trello-mcp/src/index.mjs` | Protocol layer — stdin/stdout JSON-RPC framing, dispatch, process lifecycle |
+| `.claude/trello-mcp/src/trello/client.mjs` | The Trello HTTP layer |
+| `.claude/trello-mcp/src/tools/cards.mjs` | Card-level tools (find/get/update/comment/checklist/...) |
+| `.claude/trello-mcp/src/tools/hierarchy.mjs` | Board/list/attachment/hierarchy tools |
+| `.claude/trello-mcp/src/utils/numbering.mjs` | Card-number parsing/derivation helpers |
+| `.claude/trello-mcp/src/prompts.mjs` | MCP `prompts/list` + `prompts/get`, including `create-task` (points at the two-phase draft→push flow below) |
+| `.claude/trello-mcp/src/resources.mjs` | MCP `resources/list` + `resources/read` (`trello://board/<id>/lists`, `.../activity`) |
+| `.claude/trello-mcp/src/index.test.mjs` | Full protocol + tool test suite — mocks the HTTP layer, no live Trello calls |
 | `.claude/trello-mcp/trello-board-ids.md` | **Empty template.** This project's own board/label/list id reference — fill in during setup, step 2 |
 | `.claude/agents/trello-agent.md` | Subagent that drafts User Story / Task cards, resolving label ids via `getLabels` (falling back to the file above) |
 | `.claude/agents/trello-push-agent.md` | Subagent that pushes a drafted plan's cards to Trello, attaching each to its parent |
@@ -79,7 +79,7 @@ the server itself only reads process env, it does not load `.env` files.)
 claude mcp list        # run from the repo root
 ```
 
-Expected: `trello-board: node ${CLAUDE_PROJECT_DIR:-.}/.claude/trello-mcp/server.mjs - ✔ Connected`
+Expected: `trello-board: node ${CLAUDE_PROJECT_DIR:-.}/.claude/trello-mcp/src/index.mjs - ✔ Connected`
 
 If a variable is unset, the same command prints
 `[Warning] [trello-board] mcpServers.trello-board: Missing environment variables: …`
@@ -113,7 +113,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   '{"jsonrpc":"2.0","id":3,"method":"resources/list"}' \
   '{"jsonrpc":"2.0","id":4,"method":"prompts/list"}' \
-| node .claude/trello-mcp/server.mjs
+| node .claude/trello-mcp/src/index.mjs
 ```
 
 Expect exactly four JSON-RPC frames on stdout, nothing else.
@@ -121,7 +121,7 @@ Expect exactly four JSON-RPC frames on stdout, nothing else.
 ## Running the tests
 
 ```bash
-node --test .claude/trello-mcp/server.test.mjs
+node --test .claude/trello-mcp/src/index.test.mjs
 ```
 
 Fully self-contained and passes clean on a fresh clone — mocks the HTTP

@@ -9,10 +9,10 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { Bucket, buildUrl, cardRef, pool } from "./api.mjs";
+import { Bucket, buildUrl, cardRef, pool } from "./trello/client.mjs";
 import { PROMPTS } from "./prompts.mjs";
-import { TOOLS, handle, validateArgs } from "./server.mjs";
-import { auditHierarchy, buildLinkGraph, pickCardSummary } from "./tools-hierarchy.mjs";
+import { TOOLS, handle, validateArgs } from "./index.mjs";
+import { auditHierarchy, buildLinkGraph, pickCardSummary } from "./tools/hierarchy.mjs";
 import {
   belongsUnder,
   cardNumber,
@@ -20,7 +20,7 @@ import {
   nextNumbers,
   parentNumber,
   spreadPositions,
-} from "./numbering.mjs";
+} from "./utils/numbering.mjs";
 
 const graph = buildLinkGraph([
   {
@@ -350,7 +350,7 @@ assert.match(
 for (const skill of ["trello-card-draft", "trello-card-push"]) {
   assert.match(createTask, new RegExp(`/${skill}\\b`), `create-task should name /${skill}`);
   assert.equal(
-    fs.existsSync(path.join(import.meta.dirname, "..", "skills", skill, "SKILL.md")),
+    fs.existsSync(path.join(import.meta.dirname, "..", "..", "skills", skill, "SKILL.md")),
     true,
     `create-task names /${skill} but .claude/skills/${skill}/SKILL.md does not exist`,
   );
@@ -424,7 +424,7 @@ await assert.rejects(handle({ id: 10, method: "no/such/method" }), (err) => err.
 // enough to span a macrotask, i.e. real network I/O, which this selftest refuses
 // to do. Treat these as ordering/framing guards; the race fix is structural.
 const FRAMES = 20;
-const child = spawn(process.execPath, [path.join(import.meta.dirname, "server.mjs")], {
+const child = spawn(process.execPath, [path.join(import.meta.dirname, "index.mjs")], {
   stdio: ["pipe", "pipe", "pipe"],
 });
 let out = "";

@@ -4,7 +4,7 @@
 			"type": "stdio",
 			"command": "node",
 			"args": [
-				"${CLAUDE_PROJECT_DIR:-.}/.claude/trello-mcp/server.mjs"
+				"${CLAUDE_PROJECT_DIR:-.}/.claude/trello-mcp/src/index.mjs"
 			],
 			"env": {
 				"TRELLO_API_KEY": "${TRELLO_API_KEY}",

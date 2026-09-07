@@ -12,7 +12,7 @@
 //     files and trello-card-push's docs used
 //   - responses are the raw parsed API payload; server.mjs does the JSON wrapping
 
-import { cardRef, csv, resolveBoard, trello } from "./api.mjs";
+import { cardRef, csv, resolveBoard, trello } from "../trello/client.mjs";
 
 export const TOOLS = {
   getMyBoards: {

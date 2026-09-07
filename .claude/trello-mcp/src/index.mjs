@@ -29,8 +29,8 @@ import path from "node:path";
 
 import { PROMPTS } from "./prompts.mjs";
 import { listResources, readResource } from "./resources.mjs";
-import { TOOLS as CARD_TOOLS } from "./tools-cards.mjs";
-import { TOOLS as HIERARCHY_TOOLS } from "./tools-hierarchy.mjs";
+import { TOOLS as CARD_TOOLS } from "./tools/cards.mjs";
+import { TOOLS as HIERARCHY_TOOLS } from "./tools/hierarchy.mjs";
 
 // 16 ported from mcp-trello + 9 from the wrapper, plus everything added since. The
 // selftest asserts the full name list, so a collision between the two halves shows up
@@ -250,7 +250,7 @@ export function main() {
   // outright (node exits 13). Spawning keeps `--selftest` the documented command
   // with no import cycle.
   if (process.argv[2] === "--selftest") {
-    const test = path.join(import.meta.dirname, "server.test.mjs");
+    const test = path.join(import.meta.dirname, "index.test.mjs");
     process.exit(spawnSync(process.execPath, [test], { stdio: "inherit" }).status ?? 1);
   }
 

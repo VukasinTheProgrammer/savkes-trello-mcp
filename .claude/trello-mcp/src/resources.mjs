@@ -8,7 +8,7 @@
 // The registry is rebuilt per request rather than frozen at import: api.mjs reads
 // credentials per call, so TRELLO_BOARD_ID may be set after this module loads.
 
-import { resolveBoard, trello } from "./api.mjs";
+import { resolveBoard, trello } from "./trello/client.mjs";
 
 const JSON_MIME = "application/json";
 

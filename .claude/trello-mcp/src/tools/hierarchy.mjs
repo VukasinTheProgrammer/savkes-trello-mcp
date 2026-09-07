@@ -6,14 +6,14 @@
 // ships no attachment tools. A card linked as an attachment is the closest thing
 // Trello has to a relation, and the UI renders it as a card preview.
 
-import { cardRef, pool, resolveBoard, trello } from "./api.mjs";
+import { cardRef, pool, resolveBoard, trello } from "../trello/client.mjs";
 import {
   cardNumber,
   insertionSlot,
   nextNumbers,
   parentNumber,
   spreadPositions,
-} from "./numbering.mjs";
+} from "../utils/numbering.mjs";
 
 const CARD_URL = /^https:\/\/trello\.com\/c\/([^/?#]+)/i;
 
