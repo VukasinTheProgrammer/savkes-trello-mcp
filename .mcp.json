@@ -1,0 +1,16 @@
+{
+	"mcpServers": {
+		"trello-board": {
+			"type": "stdio",
+			"command": "node",
+			"args": [
+				"${CLAUDE_PROJECT_DIR:-.}/.claude/trello-mcp/server.mjs"
+			],
+			"env": {
+				"TRELLO_API_KEY": "${TRELLO_API_KEY}",
+				"TRELLO_TOKEN": "${TRELLO_TOKEN}",
+				"TRELLO_BOARD_ID": "${TRELLO_BOARD_ID}"
+			}
+		}
+	}
+}
