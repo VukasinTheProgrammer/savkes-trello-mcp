@@ -213,54 +213,15 @@ site explains it. They apply to any MCP server you write.
 
 ## Setup
 
-Requirements: **Node ≥ 20.11**. There is nothing to install.
+**→ See [SETUP.md](SETUP.md)** for getting Trello credentials and installing
+the server in Claude Code (this repo or every project) or Claude Desktop,
+plus why a claude.ai connector isn't supported.
 
-**1. Get a Trello API key and token.**
+Quick version for this repo: export `TRELLO_API_KEY` and `TRELLO_TOKEN`,
+start `claude` from the repo root, and `.mcp.json` does the rest.
 
-- **Key:** open <https://trello.com/power-ups/admin>, create a Power-Up (any
-  name), open it, and click **Generate a new API key**.
-- **Token:** on the same page, click the **Token** link next to the key and
-  approve. Trello shows the token once.
-
-> The token grants read/write access to every board your account can see.
-> Treat it like a password and never commit it. `.mcp.json` only holds
-> `${VAR}` references.
-
-**2. Export the variables** in your shell profile, then open a new terminal so
-Claude Code inherits them:
-
-```bash
-export TRELLO_API_KEY="your_key"
-export TRELLO_TOKEN="your_token"
-export TRELLO_BOARD_ID="your_board_id"   # optional: default board for board-scoped tools
-```
-
-The server reads only the process environment. It does not load `.env`
-files; `.env.example` lists the variable names.
-
-**3. Check the connection** from the repo root:
-
-```bash
-claude mcp list
-# trello-board: node ${CLAUDE_PROJECT_DIR:-.}/server/src/index.mjs - ✔ Connected
-```
-
-**4. Find your board id.** Ask Claude to call `getMyBoards`, or use
-**Menu → Print, export, and share → Export as JSON** in Trello. Board-scoped
-tools accept a board URL, the 8-character shortLink, or the full 24-character
-id. For `TRELLO_BOARD_ID`, prefer the full id.
-
-**5. (For the card workflow)** fill in `server/trello-board-ids.md` from
-`getLabels` / `getLists` output, and optionally
-`.claude/skills/trello-card-draft/references/app-routes.md`. Both are empty
-templates. The skills resolve ids live and only fall back to these files
-when a live call fails.
-
-### Using it outside Claude Code
-
-Any MCP client that can start a stdio server works. Point it at
-`node /absolute/path/to/server/src/index.mjs` and pass the same three
-environment variables.
+> You must be a **member** of the Trello board. Being a guest on the board
+> isn't enough to use this MCP.
 
 ---
 
