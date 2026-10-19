@@ -2,26 +2,26 @@
 // trello-board — stdio MCP server for Trello cards, attachments and link graphs.
 //
 // This file is the protocol layer only: newline-framed stdin, JSON-RPC dispatch,
-// and process lifecycle. The Trello HTTP layer lives in api.mjs and the tools in
-// tools-hierarchy.mjs.
+// and process lifecycle. The Trello HTTP layer lives in trello/client.mjs and the
+// tools in tools/cards.mjs and tools/hierarchy.mjs.
 //
 // Credentials come from env only: TRELLO_API_KEY, TRELLO_TOKEN.
 // TRELLO_BOARD_ID is optional — default board for the board-scoped tools when no
 // boardId argument is given.
 //
-// Protocol smoke check:
+// Protocol smoke check (`npm run smoke` from server/):
 //   printf '%s\n' \
 //     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
 //     '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
 //     '{"jsonrpc":"2.0","id":3,"method":"resources/list"}' \
 //     '{"jsonrpc":"2.0","id":4,"method":"prompts/list"}' \
-//   | node .claude/trello-mcp/server.mjs
+//   | node server/src/index.mjs
 // Expect exactly four JSON-RPC frames on stdout, nothing else.
 //
-// Self-test (no network, no credentials required) — lives in server.test.mjs,
+// Self-test (no network, no credentials required) — lives in index.test.mjs,
 // which imports this module's exports; either command runs it:
-//   node .claude/trello-mcp/server.mjs --selftest
-//   node .claude/trello-mcp/server.test.mjs
+//   node server/src/index.mjs --selftest
+//   node server/src/index.test.mjs
 //
 
 import { spawnSync } from "node:child_process";
@@ -32,10 +32,10 @@ import { listResources, readResource } from "./resources.mjs";
 import { TOOLS as CARD_TOOLS } from "./tools/cards.mjs";
 import { TOOLS as HIERARCHY_TOOLS } from "./tools/hierarchy.mjs";
 
-// 16 ported from mcp-trello + 9 from the wrapper, plus everything added since. The
-// selftest asserts the full name list, so a collision between the two halves shows up
-// as a short count — which is also why no total is written here: a number in a comment
-// goes stale the first time a tool is added, and the selftest already holds the real one.
+// The selftest asserts the full name list, so a collision between the two halves shows
+// up as a short count — which is also why no total is written here: a number in a
+// comment goes stale the first time a tool is added, and the selftest already holds
+// the real one.
 export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS };
 
 // One source for both the handshake and the stderr log prefix, so they can't drift.
@@ -136,6 +136,9 @@ export async function handle(msg) {
         name,
         description: t.description,
         inputSchema: t.inputSchema,
+        // Hints for the client (e.g. to confirm before a destructive call), not
+        // enforcement — the server runs the tool either way.
+        ...(t.annotations && { annotations: t.annotations }),
       })),
     };
   }

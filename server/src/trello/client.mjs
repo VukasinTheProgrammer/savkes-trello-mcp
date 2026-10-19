@@ -20,7 +20,7 @@ export const cardRef = (s) =>
 // replaces mcp-trello's 24-character board-id check, which rejected the shortLink
 // form outright instead of accepting it like the rest of the surface does.
 export function resolveBoard(boardId) {
-  const board = cardRef(boardId ?? process.env.TRELLO_BOARD_ID ?? "");
+  const board = cardRef(boardId ?? defaultBoard());
   if (!board) throw new Error("boardId is required when TRELLO_BOARD_ID is not set");
   return board;
 }
@@ -87,10 +87,10 @@ function backoffMs(res, attempt) {
 }
 
 // Trello's 404 handler echoes the request line back verbatim — "Cannot GET
-// /1/cards/?key=...&token=..." — so an error body carries live credentials into the
-// tool result, the model's context and every transcript on disk. One malformed card
-// id is enough. Applied to every non-ok body, not just 404s: any Trello error that
-// quotes the request has the same query string in it.
+// /1/cards/?key=...&token=..." — so an error body can carry credentials into the
+// tool result, the model's context and every transcript on disk. authHeader keeps
+// them out of the URL now; this stays as a second guard in case a caller ever
+// passes key/token as params.
 const redact = (text) =>
   String(text).replace(/([?&](?:key|token)=)[^&\s"'<]+/gi, "$1[redacted]");
 
@@ -99,6 +99,13 @@ const redact = (text) =>
 // through as the credential. Trello then answers 401 with nothing that points at the
 // real cause, so both that shape and the plain-empty case are named here instead.
 const PLACEHOLDER = /^\$\{[^}]*\}$/;
+
+// Same placeholder trap for the optional board: unset must read as "no default",
+// not as a board literally named "${TRELLO_BOARD_ID}".
+export function defaultBoard() {
+  const value = String(process.env.TRELLO_BOARD_ID ?? "").trim();
+  return PLACEHOLDER.test(value) ? "" : value;
+}
 
 function credential(name) {
   const value = String(process.env[name] ?? "").trim();
@@ -112,31 +119,39 @@ function credential(name) {
   return value;
 }
 
+// Credentials travel in a header, not the query string, so they stay out of URLs —
+// and out of anything that logs or echoes one. Format per
+// https://developer.atlassian.com/cloud/trello/guides/rest-api/authorization/
+export function authHeader() {
+  const key = credential("TRELLO_API_KEY");
+  const token = credential("TRELLO_TOKEN");
+  return `OAuth oauth_consumer_key="${key}", oauth_token="${token}"`;
+}
+
 // Split out from `trello()` so the selftest can assert what a tool builds without
 // a network round trip.
 export function buildUrl(path, params = {}) {
-  const key = credential("TRELLO_API_KEY");
-  const token = credential("TRELLO_TOKEN");
   const url = new URL(API + path);
-  for (const [k, v] of Object.entries({ ...params, key, token })) {
+  for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
   return url;
 }
 
 export async function trello(method, path, params = {}) {
+  const headers = { Accept: "application/json", Authorization: authHeader() };
   const url = buildUrl(path, params);
   for (let attempt = 1; ; attempt++) {
     // ponytail: taking both buckets via Promise.all can burn a token in the looser
     // bucket while still waiting on the tighter one. Harmless at this volume —
     // upgrade to a single combined gate if the 100/10s bucket starts throttling.
     await Promise.all(BUCKETS.map((b) => b.take()));
-    // Timeout, not just a retry policy: dispatch in server.mjs is one serialized
+    // Timeout, not just a retry policy: dispatch in index.mjs is one serialized
     // promise chain, so a socket that never answers doesn't fail this one call — it
     // wedges every later request for the rest of the session, with no error to see.
     const res = await fetch(url, {
       method,
-      headers: { Accept: "application/json" },
+      headers,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 

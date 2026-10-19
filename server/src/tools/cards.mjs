@@ -10,19 +10,21 @@
 //     purpose rather than as a side effect of Array#toString
 //   - `addCard` also accepts the `desc`/`idLabels` spellings, which older plan
 //     files and trello-card-push's docs used
-//   - responses are the raw parsed API payload; server.mjs does the JSON wrapping
+//   - responses are the raw parsed API payload; index.mjs does the JSON wrapping
 
 import { cardRef, csv, resolveBoard, trello } from "../trello/client.mjs";
 
 export const TOOLS = {
   getMyBoards: {
     description: "Get all boards for the authenticated user (useful for finding board IDs)",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
     run: () => trello("GET", "/members/me/boards"),
   },
 
   getCard: {
     description: "Get a specific card by ID with optional comments",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -47,6 +49,7 @@ export const TOOLS = {
       "note that an unfiltered read of a large list can exceed the tool output cap " +
       "outright, which is why the filtered set is the default. To read a whole board " +
       "rather than one list, use findCards instead of calling this per list.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -70,6 +73,7 @@ export const TOOLS = {
 
   getLists: {
     description: "Get all lists from a board; defaults to TRELLO_BOARD_ID",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -81,6 +85,7 @@ export const TOOLS = {
 
   getRecentActivity: {
     description: "Get recent activity from a board; defaults to TRELLO_BOARD_ID",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -97,6 +102,7 @@ export const TOOLS = {
 
   addCard: {
     description: "Add a new card to a list",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -139,6 +145,7 @@ export const TOOLS = {
 
   updateCard: {
     description: "Update an existing card",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -172,6 +179,7 @@ export const TOOLS = {
 
   moveCard: {
     description: "Move a card to a different list",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -193,6 +201,7 @@ export const TOOLS = {
 
   changeCardMembers: {
     description: "Change the members of a card",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -211,6 +220,7 @@ export const TOOLS = {
 
   archiveCard: {
     description: "Archive a card",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: { cardId: { type: "string", description: "The ID of the card to archive" } },
@@ -223,6 +233,7 @@ export const TOOLS = {
     description:
       "Return an archived card to its list. The card keeps its list, position, " +
       "labels and attachments — archiving hides a card, it does not dismantle it.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: { cardId: { type: "string", description: "The ID of the card to unarchive" } },
@@ -233,6 +244,7 @@ export const TOOLS = {
 
   addList: {
     description: "Add a new list to a board; defaults to TRELLO_BOARD_ID",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -247,6 +259,7 @@ export const TOOLS = {
 
   archiveList: {
     description: "Archive a list",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: { listId: { type: "string", description: "The ID of the list to archive" } },
@@ -257,6 +270,7 @@ export const TOOLS = {
 
   addComment: {
     description: "Add a comment to a card",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -271,6 +285,7 @@ export const TOOLS = {
 
   updateComment: {
     description: "Update the text of an existing comment",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -286,6 +301,7 @@ export const TOOLS = {
 
   deleteComment: {
     description: "Delete a comment from a card",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -300,6 +316,7 @@ export const TOOLS = {
 
   getMyCards: {
     description: "Get cards assigned to the authenticated user",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
     run: () => trello("GET", "/members/me/cards"),
   },
@@ -319,6 +336,7 @@ export const TOOLS = {
       "label name to the idLabels value addCard/updateCard need, instead of reading a " +
       "checked-in table that goes stale when someone edits labels in Trello. boardId " +
       "accepts a board URL, shortLink, or 24-char id; defaults to TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -335,6 +353,7 @@ export const TOOLS = {
       "teammate's name to the member id changeCardMembers needs, or to map the " +
       "idMemberCreator on a getRecentActivity entry back to a person. boardId defaults " +
       "to TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -352,6 +371,7 @@ export const TOOLS = {
       "List a card's checklists with their items, as [{id, name, checkItems: [{id, " +
       "name, state, pos}]}]. Use it to find the checklistId addChecklistItem needs when " +
       "adding to a checklist that already exists.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: { cardId: { type: "string", description: "Card to inspect" } },
@@ -370,6 +390,7 @@ export const TOOLS = {
       "checklist as real checkboxes with a progress count on the card face, which is " +
       "what markdown bullets in a description cannot do. Pass the returned id to " +
       "addChecklistItem.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -389,6 +410,7 @@ export const TOOLS = {
       "id that does not work here. Both ids come from getCardChecklists: the card you " +
       "asked about, and checkItems[].id inside it. state is \"complete\" or " +
       "\"incomplete\"; pass name to reword an item without touching its state.",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -424,6 +446,7 @@ export const TOOLS = {
       "Delete a checklist and every item on it. Permanent — Trello has no undo for " +
       "this, and the items go with it. To remove one item instead, there is no " +
       "delete: reword it with updateChecklistItem, or delete the checklist and rebuild it.",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -441,6 +464,7 @@ export const TOOLS = {
     description:
       "Add one item to an existing checklist. checklistId comes from addChecklist's " +
       "result or from getCardChecklists — it is not the card id.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {

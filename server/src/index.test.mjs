@@ -1,6 +1,6 @@
 // Selftest for the trello-board server — no network, no credentials, no test framework.
 //
-//   node .claude/trello-mcp/server.mjs --selftest
+//   node server/src/index.mjs --selftest
 //
 // Running this file directly works too; `--selftest` just spawns it.
 
@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { Bucket, buildUrl, cardRef, pool } from "./trello/client.mjs";
+import { Bucket, authHeader, buildUrl, cardRef, pool, resolveBoard } from "./trello/client.mjs";
 import { PROMPTS } from "./prompts.mjs";
 import { TOOLS, handle, validateArgs } from "./index.mjs";
 import { auditHierarchy, buildLinkGraph, pickCardSummary } from "./tools/hierarchy.mjs";
@@ -350,12 +350,12 @@ assert.match(
 for (const skill of ["trello-card-draft", "trello-card-push"]) {
   assert.match(createTask, new RegExp(`/${skill}\\b`), `create-task should name /${skill}`);
   assert.equal(
-    fs.existsSync(path.join(import.meta.dirname, "..", "..", "skills", skill, "SKILL.md")),
+    fs.existsSync(path.join(import.meta.dirname, "..", "..", ".claude", "skills", skill, "SKILL.md")),
     true,
     `create-task names /${skill} but .claude/skills/${skill}/SKILL.md does not exist`,
   );
 }
-assert.match(await promptText("board-status", {}), /getCardsByList for each list/);
+assert.match(await promptText("board-status", {}), /findCards to fetch every card in one call/);
 assert.match(await promptText("my-tasks", {}), /using the getMyCards tool/);
 assert.match(await promptText("card-discussion", { cardId: "C1" }), /card "C1" using the getCard tool/);
 assert.match(
@@ -367,6 +367,11 @@ assert.match(
 // every tool-shaped identifier out of the built text and require it to be a real
 // tool, so a rename can't leave a prompt pointing at something that is gone.
 const toolNames = new Set(Object.keys(TOOLS));
+// Every tool declares whether it reads, adds, or destroys — clients use this to
+// decide what needs a confirmation prompt.
+for (const [name, t] of Object.entries(TOOLS)) {
+  assert.equal(typeof t.annotations?.readOnlyHint, "boolean", `${name} has no readOnlyHint`);
+}
 const mentioned = new Set();
 for (const [name, prompt] of Object.entries(PROMPTS)) {
   const args = Object.fromEntries(prompt.arguments.map((a) => [a.name, "x"]));
@@ -382,8 +387,8 @@ assert.deepEqual(
     "addCard",
     "addComment",
     "auditCardHierarchy",
+    "findCards",
     "getCard",
-    "getCardsByList",
     "getLists",
     "getMyCards",
     "getRecentActivity",
@@ -498,7 +503,15 @@ process.env.TRELLO_API_KEY = "test-key";
 process.env.TRELLO_TOKEN = "test-token";
 process.env.TRELLO_BOARD_ID = "6a47826d1fa56f9e07523fd4";
 
-assert.equal(buildUrl("/cards", { name: "x" }).searchParams.get("key"), "test-key");
+// Credentials go in the Authorization header, never the URL.
+assert.equal(authHeader(), 'OAuth oauth_consumer_key="test-key", oauth_token="test-token"');
+assert.equal(buildUrl("/cards", { name: "x" }).search, "?name=x");
+
+// An unset TRELLO_BOARD_ID arrives as the literal placeholder; it must read as unset.
+process.env.TRELLO_BOARD_ID = "${TRELLO_BOARD_ID}";
+assert.throws(() => resolveBoard(), /boardId is required/);
+assert.equal(resolveBoard("explicit"), "explicit");
+process.env.TRELLO_BOARD_ID = "6a47826d1fa56f9e07523fd4";
 
 // An unset variable reaches the server as the unexpanded `${VAR}` text from the
 // .mcp.json env block, which Trello answers with a bare 401. Both that and the empty
@@ -511,7 +524,7 @@ for (const [name, bad] of [
     const saved = process.env[name];
     process.env[name] = value;
     assert.throws(
-      () => buildUrl("/cards"),
+      () => authHeader(),
       (e) => e.message.startsWith(`${name} is not set`),
       `${name}=${JSON.stringify(value)} should fail naming ${name}`,
     );
@@ -520,7 +533,7 @@ for (const [name, bad] of [
 }
 // A credential that merely contains braces is not a placeholder.
 process.env.TRELLO_TOKEN = "ATTA${weird}";
-assert.equal(buildUrl("/cards").searchParams.get("token"), "ATTA${weird}");
+assert.match(authHeader(), /oauth_token="ATTA\$\{weird\}"/);
 process.env.TRELLO_TOKEN = "test-token";
 
 const requests = [];
@@ -559,8 +572,7 @@ globalThis.fetch = async (url, opts = {}) => {
   requests.push({
     method: opts.method,
     path: u.pathname,
-    // key/token are on every request; asserting them 13 times says nothing.
-    params: Object.fromEntries([...u.searchParams].filter(([k]) => k !== "key" && k !== "token")),
+    params: Object.fromEntries(u.searchParams),
   });
   fetchPeak = Math.max(fetchPeak, ++inFlight);
   await new Promise((r) => setImmediate(r)); // yield, so overlap is observable

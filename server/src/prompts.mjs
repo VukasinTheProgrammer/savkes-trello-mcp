@@ -1,9 +1,8 @@
 // The 5 prompts ported from mcp-trello 0.4.0's `registerTrelloPrompts`.
 //
 // Static text builders — no API calls, no imports beyond this file. The prompt text
-// names tools directly (getLists, addCard, getCardsByList, getRecentActivity,
-// getMyCards, getCard, addComment); every one of those names survives the merge
-// unchanged, so the text is copied verbatim. The selftest re-checks that claim by
+// names tools directly (getLists, findCards, getRecentActivity,
+// getMyCards, getCard, addComment). The selftest re-checks that claim by
 // pulling each tool-shaped identifier out of the built text and looking it up in
 // the merged tool map — a rename would otherwise leave the prompts pointing at
 // tools that no longer exist.
@@ -42,7 +41,7 @@ export const PROMPTS = {
     arguments: [],
     build: () =>
       user(
-        "Please provide a comprehensive overview of the Trello board. Use getLists to see all lists, then getCardsByList for each list to show cards. Also use getRecentActivity to show recent changes.",
+        "Please provide a comprehensive overview of the Trello board. Use getLists to see all lists, then findCards to fetch every card in one call and group them by idList. Also use getRecentActivity to show recent changes.",
       ),
   },
 

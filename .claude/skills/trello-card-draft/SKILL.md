@@ -21,7 +21,7 @@ Default level: `story` (breaking a parent user story into further story cards �
 Example: `/trello-card-draft playwright-tests` (story level), `/trello-card-draft q4-feature-set --level epic`, `/trello-card-draft card-limit-account --level task --design card-limit.html --docs card-limit-spec.md`
 
 ## Board ID reference
-Label and list IDs are board constants shared across skills — resolve every label/list name against [`../../trello-mcp/trello-board-ids.md`](../../trello-mcp/trello-board-ids.md), not a copy kept here.
+Label and list IDs are board constants shared across skills — resolve every label/list name against [`../../../server/trello-board-ids.md`](../../../server/trello-board-ids.md), not a copy kept here.
 
 ## Where the files live
 

@@ -12,7 +12,7 @@ Example: `/trello-card-push playwright-tests`
 Reads: `.claude/tasks/<topic>.md`
 
 ## Board ID reference
-Label and list IDs are board constants shared across skills — resolve every label/list name against [`../../trello-mcp/trello-board-ids.md`](../../trello-mcp/trello-board-ids.md), not a copy kept here.
+Label and list IDs are board constants shared across skills — resolve every label/list name against [`../../../server/trello-board-ids.md`](../../../server/trello-board-ids.md), not a copy kept here.
 
 ## How this runs
 

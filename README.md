@@ -1,139 +1,328 @@
 # savkes-trello-mcp
 
-A project-local, stdio Trello integration for Claude Code, plus the drafting
-workflow that uses it: draft cards as a reviewable plan file, then push them
-to Trello with hierarchy numbers, parent attachment, and labels resolved
-automatically. No external dependencies for the server itself: pure Node.js
-ESM (`.mjs`), Node's built-in `http`/`https`/`fetch` only, no `package.json`.
+A working [Model Context Protocol](https://modelcontextprotocol.io) server for
+Trello, written **from scratch with zero dependencies**: no SDK, no
+`node_modules`, just Node's standard library and about 1,800 lines of
+commented code.
 
-Cut from the TBP — Team Bravo Projekat repo. Everything project-specific
-(that project's own board/label/list ids, its app's route list) was stripped
-to empty templates — this copy is the mechanism only, ready to point at any
-Trello board and any project.
+Use it two ways:
 
-## Layout
+- **To learn how MCP works.** Most servers hide the protocol behind
+  `@modelcontextprotocol/sdk`. Here you can read every byte that crosses the
+  wire, from the `initialize` handshake to a tool result, in a single
+  270-line file.
+- **As a real Trello integration for Claude Code.** It has 34 tools, 5
+  prompts, 3 resources, and a draft → review → push workflow for creating
+  numbered epic/story/task cards.
 
-| File | What |
+---
+
+## Contents
+
+1. [What MCP is, in one minute](#what-mcp-is-in-one-minute)
+2. [Architecture](#architecture)
+3. [The life of a tool call](#the-life-of-a-tool-call)
+4. [Add your own tool](#add-your-own-tool)
+5. [Lessons baked into the code](#lessons-baked-into-the-code)
+6. [Setup](#setup)
+7. [What's included](#whats-included)
+8. [Testing](#testing)
+9. [When to use the official SDK instead](#when-to-use-the-official-sdk-instead)
+
+---
+
+## What MCP is, in one minute
+
+An MCP **client** (Claude Code, Claude Desktop, an IDE) starts your **server**
+as a child process and talks to it over **stdin/stdout**. Each message is one
+line of [JSON-RPC 2.0](https://www.jsonrpc.org/specification). A server can
+offer three kinds of things:
+
+| Primitive | What it is | Here |
+|---|---|---|
+| **Tools** | Functions the model can call | `addCard`, `findCards`, `auditCardHierarchy`, … |
+| **Resources** | Read-only data addressed by URI | `trello://board/<id>/lists` |
+| **Prompts** | Reusable prompt templates the user can invoke | `board-status`, `my-tasks`, … |
+
+A session from the server's side looks like this:
+
+```
+client → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
+server ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{},"resources":{},"prompts":{}},"serverInfo":{"name":"trello-board","version":"0.4.0"}}}
+client → {"jsonrpc":"2.0","method":"notifications/initialized"}          ← no id = notification, never answered
+client → {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+server ← {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"getMyBoards","description":"…","inputSchema":{…},"annotations":{…}}, …]}}
+client → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"findCards","arguments":{}}}
+server ← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"[ {\"name\":\"1.1. Login page\", …} ]"}]}}
+```
+
+That covers most of what the protocol does.
+
+---
+
+## Architecture
+
+```
+ .mcp.json ──starts──▶ node server/src/index.mjs
+                         │
+                         │  protocol layer: line framing, JSON-RPC dispatch,
+                         │  argument validation, version negotiation
+                         │
+          ┌──────────────┼──────────────────┬───────────────────┐
+          ▼              ▼                  ▼                   ▼
+   tools/cards.mjs  tools/hierarchy.mjs  resources.mjs      prompts.mjs
+   CRUD tools       domain tools         trello:// URIs     text templates
+          │              │                  │
+          │              ├──▶ utils/numbering.mjs   pure logic, no I/O
+          ▼              ▼                  ▼
+        trello/client.mjs  ── the ONLY place that talks HTTP ──▶ api.trello.com
+        auth header · rate limit · 429 retry · timeout · error redaction
+```
+
+Each layer has one job, and each job lives in one layer:
+
+| File | Job | Knows about |
+|---|---|---|
+| `server/src/index.mjs` | Speak MCP: frame lines, route methods, validate args, wrap results | MCP, but not Trello |
+| `server/src/tools/*.mjs` | Define tools as plain objects `{ description, inputSchema, annotations, run }` | Trello endpoints, but not MCP framing |
+| `server/src/trello/client.mjs` | One `trello(method, path, params)` function for every HTTP call | HTTP, but not tools |
+| `server/src/utils/numbering.mjs` | Card-number parsing and placement maths | Nothing (pure functions) |
+| `server/src/resources.mjs`, `prompts.mjs` | The other two MCP primitives | — |
+| `server/src/index.test.mjs` | Protocol + tool tests with a mocked `fetch` | — |
+
+Because a tool is plain data plus a `run` function, the protocol layer doesn't
+need any knowledge of individual tools. It reads `TOOLS` (`index.mjs:39`) and
+serves whatever is in it.
+
+---
+
+## The life of a tool call
+
+Follow `{"id":3,"method":"tools/call","params":{"name":"getCard","arguments":{"cardId":"abc"}}}`
+through the code:
+
+1. **Framing:** `onChunk` (`index.mjs`) buffers stdin and splits on `\n`. A
+   partial line stays in the buffer until the rest arrives.
+2. **Queueing:** each complete line is chained onto a single promise
+   (`queue = queue.then(...)`). Requests run one at a time, so responses come
+   back in order.
+3. **Parsing:** `dispatch` runs `JSON.parse`. If the message has no `id`,
+   it's a notification and never gets a response.
+4. **Routing:** `handle` switches on `method`. For `tools/call` it looks up
+   `TOOLS[name]`.
+5. **Validation:** `validateArgs` checks the arguments against the tool's
+   `inputSchema`: unknown keys, missing required keys, and wrong types. It
+   names the offending key.
+6. **Execution:** `tool.run(args)` calls `trello("GET", "/cards/abc")`.
+7. **HTTP:** `trello()` takes a rate-limit token, sets the `Authorization`
+   header, calls `fetch` with a 30-second timeout, retries a 429 up to 5
+   times with backoff, and parses the JSON.
+8. **Result:** `handle` wraps the value as
+   `{ content: [{ type: "text", text: JSON.stringify(result) }] }`.
+9. **Errors:** an exception inside a tool becomes
+   `{ content: [...message...], isError: true }`, a *result* the model can
+   read and react to. Only protocol-level failures (unknown method, bad
+   prompt name) become JSON-RPC `error` frames.
+
+The split in step 9 is important. A failed tool call is information for the
+model ("that card id doesn't exist"). A protocol error means the client
+itself did something wrong.
+
+---
+
+## Add your own tool
+
+Example: a read-only tool that returns a board's name and URL.
+
+**1. Add an entry to `server/src/tools/cards.mjs`:**
+
+```js
+getBoard: {
+  description:
+    "Get a board's name, description and URL. boardId accepts a board URL, " +
+    "shortLink, or 24-char id; defaults to TRELLO_BOARD_ID.",
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: "object",
+    properties: {
+      boardId: { type: "string", description: "Board to read; defaults to TRELLO_BOARD_ID" },
+    },
+  },
+  run: ({ boardId } = {}) =>
+    trello("GET", `/boards/${resolveBoard(boardId)}`, { fields: "name,desc,url" }),
+},
+```
+
+**2. Add its name to the expected tool list** in `index.test.mjs`. The test
+suite asserts the full set of tool names, so a missing or colliding tool
+fails loudly.
+
+**3. Run `npm test` and `npm run smoke`**, then restart Claude Code. The new
+tool is listed as `mcp__trello-board__getBoard`.
+
+Checklist for a good tool:
+
+- **Write the `description` for the model, not for a human.** Say what it
+  returns, what to pass, and which tool to use instead when this one is the
+  wrong choice. The model relies on this text when choosing tools.
+- **Keep payloads small.** Ask Trello for only the `fields` you need. A raw
+  card list can run to hundreds of thousands of characters and fill the
+  model's context. That's why `findCards` returns 4 fields per card.
+- **Set `annotations`.** `readOnlyHint: true` for reads. For writes,
+  `destructiveHint` defaults to *true* in the spec, so additive tools should
+  say `destructiveHint: false`. Clients use these hints to decide what needs
+  a confirmation prompt.
+- **Throw on bad input.** Trello often answers 200 and ignores a bad value
+  (see `updateChecklistItem`), so validate in `run` when that's the case.
+
+---
+
+## Lessons baked into the code
+
+Every one of these is a bug someone actually hit, and the comment at each
+site explains it. They apply to any MCP server you write.
+
+| Lesson | Where |
 |---|---|
-| `.claude/trello-mcp/src/index.mjs` | Protocol layer — stdin/stdout JSON-RPC framing, dispatch, process lifecycle |
-| `.claude/trello-mcp/src/trello/client.mjs` | The Trello HTTP layer |
-| `.claude/trello-mcp/src/tools/cards.mjs` | Card-level tools (find/get/update/comment/checklist/...) |
-| `.claude/trello-mcp/src/tools/hierarchy.mjs` | Board/list/attachment/hierarchy tools |
-| `.claude/trello-mcp/src/utils/numbering.mjs` | Card-number parsing/derivation helpers |
-| `.claude/trello-mcp/src/prompts.mjs` | MCP `prompts/list` + `prompts/get`, including `create-task` (points at the two-phase draft→push flow below) |
-| `.claude/trello-mcp/src/resources.mjs` | MCP `resources/list` + `resources/read` (`trello://board/<id>/lists`, `.../activity`) |
-| `.claude/trello-mcp/src/index.test.mjs` | Full protocol + tool test suite — mocks the HTTP layer, no live Trello calls |
-| `.claude/trello-mcp/trello-board-ids.md` | **Empty template.** This project's own board/label/list id reference — fill in during setup, step 2 |
-| `.claude/agents/trello-agent.md` | Subagent that drafts User Story / Task cards, resolving label ids via `getLabels` (falling back to the file above) |
-| `.claude/agents/trello-push-agent.md` | Subagent that pushes a drafted plan's cards to Trello, attaching each to its parent |
-| `.claude/skills/trello-card-draft/` | `/trello-card-draft <topic>` — drafts a reviewable plan to `.claude/tasks/<topic>.md` |
-| `.claude/skills/trello-card-draft/references/app-routes.md` | **Empty template.** This project's own page/route list, used by story-level drafting for app context — see its own header for how to fill it in |
-| `.claude/skills/trello-card-push/` | `/trello-card-push <topic>` — creates the drafted cards for real |
-| `.mcp.json` | Server registration, credentials as `${VAR}` references only |
-| `.env.example` | Template for the three required env vars |
+| **stdout is the protocol.** A stray `console.log` corrupts the stream, so all logging goes to stderr. | `index.mjs` (`console.error` only) |
+| **Reject unknown arguments.** Otherwise a `desc:` vs `description:` typo silently creates an empty card. | `validateArgs` |
+| **Negotiate the protocol version, don't echo it.** Answer with a version you actually support. | `negotiateVersion` |
+| **Answer `resources/templates/list` even if it's empty.** If you declare a capability, clients will call it. | `handle` |
+| **Every network call needs a timeout.** With serialized dispatch, one hung socket stalls the whole session. | `client.mjs` `AbortSignal.timeout` |
+| **Bound your retries.** An unbounded 429 loop looks exactly like a hang. | `MAX_ATTEMPTS` |
+| **Keep credentials out of URLs.** Trello's 404 page echoes the request URL, so query-string credentials end up in model context and transcripts. Credentials go in the `Authorization` header, with redaction as a backup. | `authHeader`, `redact` |
+| **Unset env vars may arrive as the literal text `${VAR}`.** Detect that and name the missing variable instead of failing with an opaque 401. | `credential`, `defaultBoard` |
+| **Rate-limit on the client side.** Trello allows 100 requests per 10 seconds per token, and it's easier to stay under that than to recover from 429s. | `Bucket` |
+| **Bound fan-out.** `placeCards` moves 40 cards through a pool of 4 workers, not 40 sockets at once. | `pool` |
+| **Report partial failure.** Batch tools return `{ placed, failed }` so a half-applied batch isn't hidden behind one error. | `placeCards`, `repairCardHierarchy` |
 
-## One-time setup
+---
+
+## Setup
+
+Requirements: **Node ≥ 20.11**. There is nothing to install.
 
 **1. Get a Trello API key and token.**
 
-- **Key** — open <https://trello.com/power-ups/admin>, create a Power-Up (any
-  name, pick the right workspace), open it, then **Generate an API key** on
-  the *API key* tab.
-- **Token** — on that same tab, click the **Token** link next to the key.
-  Approve the request and Trello shows the token once. Copy it before
-  leaving the page.
+- **Key:** open <https://trello.com/power-ups/admin>, create a Power-Up (any
+  name), open it, and click **Generate a new API key**.
+- **Token:** on the same page, click the **Token** link next to the key and
+  approve. Trello shows the token once.
 
-The token grants read/write on every board your account can see, so treat it
-like a password: never paste it into a file in this repo. `.mcp.json` only
-holds `${VAR}` references.
+> The token grants read/write access to every board your account can see.
+> Treat it like a password and never commit it. `.mcp.json` only holds
+> `${VAR}` references.
 
-**2. Find your board id and fill in `trello-board-ids.md`.** Open the board
-in Trello, click **Show Menu → More → Print, export, and share → Print and
-export → Export as JSON**, or call `getMyBoards` once the server is
-connected — either way you want the **full 24-character id**, not the
-8-character shortLink from the board's URL (`addList` and other write calls
-reject the shortLink outright). Put that id in
-`.claude/trello-mcp/trello-board-ids.md`'s Board ID table, then call
-`getLabels`/`getLists` once connected and fill in the Label ID map and List
-ID map the same way. Every skill/agent here resolves ids live where it can
-and falls back to this file only when that call fails, so a stale or
-half-filled table degrades — it doesn't break anything.
-
-**3. Export all three variables** in your shell profile (`~/.zshrc`,
-`~/.bashrc`), then open a new terminal so a Claude Code session inherits
-them:
+**2. Export the variables** in your shell profile, then open a new terminal so
+Claude Code inherits them:
 
 ```bash
 export TRELLO_API_KEY="your_key"
 export TRELLO_TOKEN="your_token"
-export TRELLO_BOARD_ID="your_board_id"
+export TRELLO_BOARD_ID="your_board_id"   # optional: default board for board-scoped tools
 ```
 
-(Or copy `.env.example` to `.env` and fill it in, if this project already
-has something loading `.env` into the shell before Claude Code starts —
-the server itself only reads process env, it does not load `.env` files.)
+The server reads only the process environment. It does not load `.env`
+files; `.env.example` lists the variable names.
 
-**4. Confirm the server is connected:**
+**3. Check the connection** from the repo root:
 
 ```bash
-claude mcp list        # run from the repo root
+claude mcp list
+# trello-board: node ${CLAUDE_PROJECT_DIR:-.}/server/src/index.mjs - ✔ Connected
 ```
 
-Expected: `trello-board: node ${CLAUDE_PROJECT_DIR:-.}/.claude/trello-mcp/src/index.mjs - ✔ Connected`
+**4. Find your board id.** Ask Claude to call `getMyBoards`, or use
+**Menu → Print, export, and share → Export as JSON** in Trello. Board-scoped
+tools accept a board URL, the 8-character shortLink, or the full 24-character
+id. For `TRELLO_BOARD_ID`, prefer the full id.
 
-If a variable is unset, the same command prints
-`[Warning] [trello-board] mcpServers.trello-board: Missing environment variables: …`
-naming it, and any tool call fails with `TRELLO_API_KEY is not set — …`
-rather than an opaque Trello 401.
+**5. (For the card workflow)** fill in `server/trello-board-ids.md` from
+`getLabels` / `getLists` output, and optionally
+`.claude/skills/trello-card-draft/references/app-routes.md`. Both are empty
+templates. The skills resolve ids live and only fall back to these files
+when a live call fails.
 
-**5. (Optional) Fill in `app-routes.md`** if this project has a frontend
-with a meaningful page list — see that file's own header for the shape
-`user-story.md` expects. Skip it for a backend-only repo, a CLI, or a
-library; drafting still works without it, just without app-context in the
-generated stories.
+### Using it outside Claude Code
 
-**6. Draft a card** to check the whole path end to end:
+Any MCP client that can start a stdio server works. Point it at
+`node /absolute/path/to/server/src/index.mjs` and pass the same three
+environment variables.
+
+---
+
+## What's included
+
+### Tools (34)
+
+| Group | Tools |
+|---|---|
+| **Read** | `getMyBoards` `getLists` `getLabels` `getBoardMembers` `getCard` `getCardsByList` `getMyCards` `getRecentActivity` `getCardChecklists` `listCardAttachments` `findCard` `findCards` |
+| **Write (additive)** | `addCard` `addList` `addComment` `addChecklist` `addChecklistItem` `moveCard` `unarchiveCard` `attachCard` `placeCards` |
+| **Write (destructive)** | `updateCard` `changeCardMembers` `archiveCard` `archiveList` `updateComment` `deleteComment` `updateChecklistItem` `deleteChecklist` `detachCard` |
+| **Hierarchy** | `listBoardCardLinks` `auditCardHierarchy` `nextCardNumbers` `repairCardHierarchy` (with `dryRun`) |
+
+The hierarchy tools show what domain tools look like beyond CRUD. Cards are
+numbered `EPIC 1` → `1.1` (story) → `1.1.2` (task), each card is attached to
+its parent, and the tools check and repair that structure. The rules live in
+`utils/numbering.mjs` as pure functions, so they're easy to test.
+
+### Resources
+
+`trello://board/<id>/lists`, `trello://board/<id>/activity` (both only when
+`TRELLO_BOARD_ID` is set), and `trello://me/cards`.
+
+### Prompts
+
+`create-task`, `board-status`, `my-tasks`, `card-discussion`, `comment-on-card`.
+
+### Claude Code workflow (`.claude/`)
+
+On top of the server, the repo ships a two-phase card workflow:
 
 ```
-/trello-card-draft <topic>
+/trello-card-draft <topic>   → trello-agent writes .claude/tasks/<topic>.md   (you review and edit it)
+/trello-card-push  <topic>   → trello-push-agent creates the cards, numbers them,
+                               attaches each one to its parent, and orders them in the list
 ```
 
-That writes a reviewable plan to `.claude/tasks/<topic>.md` (gitignore it in
-whatever project this ends up in). `/trello-card-push <topic>` turns it into
-real cards. Full skill options are in
-`.claude/skills/trello-card-draft/SKILL.md`.
+| Path | What |
+|---|---|
+| `.claude/skills/trello-card-draft/` | Draft skill, with templates for epic / user-story / task cards |
+| `.claude/skills/trello-card-push/` | Push skill |
+| `.claude/agents/trello-agent.md` | Subagent that writes the cards |
+| `.claude/agents/trello-push-agent.md` | Subagent that creates them in Trello |
 
-## Protocol smoke check
+Add `.claude/tasks/` to `.gitignore` in whatever project uses this workflow.
 
-No live credentials needed — this only exercises the JSON-RPC handshake:
+---
+
+## Testing
 
 ```bash
-printf '%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  '{"jsonrpc":"2.0","id":3,"method":"resources/list"}' \
-  '{"jsonrpc":"2.0","id":4,"method":"prompts/list"}' \
-| node .claude/trello-mcp/src/index.mjs
+cd server
+npm test        # protocol + tool tests, mocked fetch, no network or credentials needed
+npm run smoke   # real stdio round trip: prints exactly 4 JSON-RPC frames
 ```
 
-Expect exactly four JSON-RPC frames on stdout, nothing else.
+`npm test` replaces `globalThis.fetch` with a recorder, so it checks the exact
+request each tool would send (method, path, params) without calling Trello.
+It also starts the server as a child process and talks to it over real
+stdio.
 
-## Running the tests
+---
 
-```bash
-node --test .claude/trello-mcp/src/index.test.mjs
-```
+## When to use the official SDK instead
 
-Fully self-contained and passes clean on a fresh clone — mocks the HTTP
-layer, makes no live Trello calls, uses a placeholder board id purely as
-fixture data for building expected request paths, and (now that
-`trello-card-draft`/`trello-card-push` are both present) the `create-task`
-prompt's self-consistency check passes too.
+This server writes the protocol by hand so you can see it. For a production
+server, consider
+[`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk):
+it handles transports (stdio *and* HTTP), schema validation with zod,
+progress notifications, cancellation, and new protocol versions as they
+ship. Once you've read `index.mjs`, you'll know what the SDK does for you.
 
-## Not included
+---
 
-`member-summary`, `trello-audit`, and any other Trello-adjacent skills from
-the upstream repo weren't copied — those are further downstream tooling
-(activity summaries, hierarchy-drift auditing) built on top of this same
-server, not required for the core draft → push workflow. Add them from the
-upstream repo the same way this copy was made, if wanted.
+## License
+
+MIT, see [LICENSE](LICENSE).

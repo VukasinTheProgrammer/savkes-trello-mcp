@@ -74,7 +74,7 @@ export function auditHierarchy(cards) {
   let unnumbered = 0;
 
   for (const card of cards) {
-    const n = cardNumber  (card.name);
+    const n = cardNumber(card.name);
     if (n === null) {
       unnumbered += 1;
       continue;
@@ -147,6 +147,7 @@ export const TOOLS = {
       "Attach one Trello card to another as a linked attachment, rendered as a card " +
       "preview. Each id accepts a full https://trello.com/c/... URL, a bare shortLink, " +
       "or a 24-char id.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -185,6 +186,7 @@ export const TOOLS = {
       "zero, one or several matches mean. Use this to resolve a parent before planning " +
       "under it: it is one card instead of findCards' whole board. boardId defaults to " +
       "TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -224,6 +226,7 @@ export const TOOLS = {
       "failing to move never discards the moves that succeeded, so check `failed` " +
       "rather than assuming an error means nothing happened. Epic-level cards need none of this — a whole " +
       "epic block appends to the end of the list, which is where new cards go anyway.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -299,6 +302,7 @@ export const TOOLS = {
       "list, which returns full unfiltered card objects and can exceed the tool output cap " +
       "outright. boardId accepts a board URL, shortLink, or 24-char id; defaults to " +
       "TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -316,6 +320,7 @@ export const TOOLS = {
 
   listCardAttachments: {
     description: "List a card's attachments as [{id, name, url}]. Use to find an attachment id for detachCard.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: { cardId: { type: "string", description: "Card to inspect" } },
@@ -336,6 +341,7 @@ export const TOOLS = {
       "holding card, and exactly what detachCard needs to remove it. boardId accepts a " +
       "https://trello.com/b/... URL, a shortLink, or a 24-char id; defaults to " +
       "TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -362,6 +368,7 @@ export const TOOLS = {
       "duplicateNumbers, selfLinks, unnumbered }, where missing/wrongParent entries carry " +
       "the shortLinks needed to fix them via attachCard/detachCard. boardId defaults to " +
       "TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -391,6 +398,7 @@ export const TOOLS = {
       "staleLinks/selfLinks report bad attachment data on the board. Nothing is written to " +
       "disk: there is no snapshot file, so there is nothing to go stale. boardId defaults " +
       "to TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -446,6 +454,7 @@ export const TOOLS = {
       "verbatim from the audit — those need a decision, not a default. Pass " +
       "dryRun: true to get the same report with nothing written. boardId defaults to " +
       "TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -489,7 +498,7 @@ export const TOOLS = {
         selfLinks: audit.selfLinks,
       };
 
-      if (dryRun) return { boardId, dryRun: true, wouldAttach: plan, failed: [], untouched };
+      if (dryRun) return { boardId: board, dryRun: true, wouldAttach: plan, failed: [], untouched };
 
       // Bounded like placeCards: a first repair of a drifted board can be dozens of
       // attaches, and each one is a POST.
@@ -508,7 +517,7 @@ export const TOOLS = {
       });
 
       return {
-        boardId,
+        boardId: board,
         dryRun: false,
         attached: results.filter((r) => r.ok),
         failed: results.filter((r) => !r.ok),
@@ -519,6 +528,7 @@ export const TOOLS = {
 
   detachCard: {
     description: "Delete an attachment from a card by attachment id.",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {

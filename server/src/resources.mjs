@@ -5,15 +5,15 @@
 // embed it, while "My Cards" is registered unconditionally — /members/me/cards is
 // scoped by the token, not by a board.
 //
-// The registry is rebuilt per request rather than frozen at import: api.mjs reads
+// The registry is rebuilt per request rather than frozen at import: trello/client.mjs reads
 // credentials per call, so TRELLO_BOARD_ID may be set after this module loads.
 
-import { resolveBoard, trello } from "./trello/client.mjs";
+import { defaultBoard, resolveBoard, trello } from "./trello/client.mjs";
 
 const JSON_MIME = "application/json";
 
 function registry() {
-  const board = process.env.TRELLO_BOARD_ID ? resolveBoard() : null;
+  const board = defaultBoard() ? resolveBoard() : null;
   return [
     ...(board
       ? [

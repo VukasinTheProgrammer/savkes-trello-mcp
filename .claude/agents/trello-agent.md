@@ -62,7 +62,7 @@ The caller gives you `Topic`, `Plan file`, `Target list`, `Prefix` and the start
 
 1. **Resolve every label name to its ID with `mcp__trello-board__getLabels`.** One call, no `boardId` argument needed — it defaults to the configured board and returns `[{id, name, color}]` for every label on it. Match on `name`, case-insensitively. Never guess an ID.
 
-   `.claude/trello-mcp/trello-board-ids.md` keeps a human-readable copy of the same table. Use it **only** if `getLabels` fails, and say so in the receipt when you do. That copy has drifted before — `Design` existed in Trello and was missing from the file until a live call surfaced it — so the tool is the source of truth and the file is the fallback, never the reverse.
+   `server/trello-board-ids.md` keeps a human-readable copy of the same table. Use it **only** if `getLabels` fails, and say so in the receipt when you do. That copy has drifted before — `Design` existed in Trello and was missing from the file until a live call surfaced it — so the tool is the source of truth and the file is the fallback, never the reverse.
 
    A label name your level requires that `getLabels` does not return → skip that label, warn in the receipt, and carry on. Never invent an ID and never substitute a different label.
 2. Write `<Plan file>` — header first:
