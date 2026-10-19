@@ -253,7 +253,8 @@ its parent, and the tools check and repair that structure. The rules live in
 
 ### Claude Code workflow (`.claude/`)
 
-On top of the server, the repo ships a two-phase card workflow:
+On top of the server, the repo ships a two-phase card workflow. **For
+diagrams of every step, see [docs/WORKFLOW.md](docs/WORKFLOW.md).**
 
 ```
 /trello-card-draft <topic>   → trello-agent writes .claude/tasks/<topic>.md   (you review and edit it)
@@ -269,6 +270,48 @@ On top of the server, the repo ships a two-phase card workflow:
 | `.claude/agents/trello-push-agent.md` | Subagent that creates them in Trello |
 
 Add `.claude/tasks/` to `.gitignore` in whatever project uses this workflow.
+
+### Board audit (Claude Code workflow)
+
+`.claude/workflows/board-audit.js` is a saved
+[Claude Code workflow](https://code.claude.com/docs): a script that
+coordinates several subagents, each calling this MCP server's tools. It checks
+a board against the card conventions above and **changes nothing**. The
+agents are restricted to read-only tools.
+
+Run it by asking Claude Code, from this repo:
+
+```
+Run the board-audit workflow on board NH8KxB3X
+```
+
+Arguments: `boardId` (required: URL, shortLink or id) and `epic` (optional,
+audits one epic, e.g. `"2"`). Watch progress with `/workflows`.
+
+```
+Structure  1 agent      auditCardHierarchy + listBoardCardLinks + the epic list
+Review     ≤ 4 agents   epics split into at most 4 batches; getCard on every card,
+                        checked against the epic / story / task conventions
+Verify     ≤ 4 agents   a skeptic re-fetches each flagged card and drops what it can refute
+```
+
+It returns `{ hierarchyIssues, staleLinks, findings, failedBatches }`. Each
+finding names the card, the rule it breaks and what's wrong. A label missing
+from the whole board is reported once with `shortLink: "board"`, not once
+per card. `failedBatches` counts batches that errored and aren't covered by
+the report.
+
+Fixing anything is up to you: `repairCardHierarchy` for missing parent
+links, `updateCard` for labels and descriptions.
+
+**Cost:** each agent is a full subagent. A 20-card, 1-epic board took 3
+agents and about 180k tokens. A large board uses up to 9 agents and
+proportionally more.
+
+When this is a good fit: the work splits into independent parts (one batch
+of epics per agent), and a second agent double-checks the findings. The
+draft → push flow is not a workflow, because it needs you to review the plan
+partway through, and a workflow runs start to finish without stopping.
 
 ---
 

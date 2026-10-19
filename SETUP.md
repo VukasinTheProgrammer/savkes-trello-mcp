@@ -175,16 +175,19 @@ Claude Desktop instead.
 
 ## Optional: the card workflow
 
-The `/trello-card-draft` and `/trello-card-push` skills read two templates,
-which start out empty:
+How it works, with diagrams: [docs/WORKFLOW.md](docs/WORKFLOW.md). Before
+your first `/trello-card-push`:
 
-- `server/trello-board-ids.md`: fill it in from `getLabels` / `getLists`
-  output.
-- `.claude/skills/trello-card-draft/references/app-routes.md`: your app's
-  page list. Only needed if the project has a frontend.
+- **Set `TRELLO_BOARD_ID`.** It's optional for the server, but the push calls
+  `findCards` without a board, so this workflow requires it.
+- **Fill in the List ID map** in `server/trello-board-ids.md` from `getLists`,
+  at least the `Backlog` row. Push looks up the target list's id there and
+  has no live fallback. Label ids are looked up live with `getLabels`; that
+  table is only a fallback.
+- Optionally, `.claude/skills/trello-card-draft/references/app-routes.md`:
+  your app's page list, if the project has a frontend.
 
-The skills look ids up live and only fall back to these files when a live
-call fails. Skills only work in Claude Code, inside this repo.
+Skills only work in Claude Code, inside this repo.
 
 ## Troubleshooting
 
