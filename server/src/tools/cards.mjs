@@ -8,18 +8,25 @@
 //     so `addList` no longer hard-rejects anything that isn't 24 characters
 //   - array parameters serialize through `csv`, so `[]` clears labels/members on
 //     purpose rather than as a side effect of Array#toString
-//   - `addCard` also accepts the `desc`/`idLabels` spellings, which older plan
-//     files and trello-card-push's docs used
 //   - responses are the raw parsed API payload; index.mjs does the JSON wrapping
 
 import { cardRef, csv, resolveBoard, trello } from "../trello/client.mjs";
 
+// Unfiltered, /members/me/cards runs ~3,800 characters per card (771,578 for one
+// 202-card account), far over a client's tool-output cap. These are the fields the
+// my-tasks prompt needs to group by board/list and sort by due date. Shared with
+// the "My Cards" resource.
+export const MY_CARD_FIELDS = "name,shortLink,due,dueComplete,idBoard,idList";
+
 export const TOOLS = {
   getMyBoards: {
-    description: "Get all boards for the authenticated user (useful for finding board IDs)",
+    description:
+      "Get all boards for the authenticated user as [{id, name, shortLink, url, closed}] " +
+      "(useful for finding board IDs)",
     annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
-    run: () => trello("GET", "/members/me/boards"),
+    // Filtered: an unfiltered board object is ~7,400 characters of prefs and limits.
+    run: () => trello("GET", "/members/me/boards", { fields: "name,shortLink,url,closed" }),
   },
 
   getCard: {
@@ -121,25 +128,16 @@ export const TOOLS = {
           items: { type: "string" },
           description: "Array of label IDs to add to the card",
         },
-        // Aliases, not part of mcp-trello's zod shape: trello-card-push's docs and
-        // older plan files spell these the way the Trello API does. Declared here
-        // so argument validation accepts them instead of rejecting them by name.
-        desc: { type: "string", description: "Alias for `description`" },
-        idLabels: {
-          type: "array",
-          items: { type: "string" },
-          description: "Alias for `labels`",
-        },
       },
       required: ["listId", "name"],
     },
-    run: ({ listId, name, description, dueDate, labels, desc, idLabels }) =>
+    run: ({ listId, name, description, dueDate, labels }) =>
       trello("POST", "/cards", {
         idList: listId,
         name,
-        desc: description ?? desc,
+        desc: description,
         due: dueDate,
-        idLabels: csv(labels ?? idLabels),
+        idLabels: csv(labels),
       }),
   },
 
@@ -315,10 +313,34 @@ export const TOOLS = {
   },
 
   getMyCards: {
-    description: "Get cards assigned to the authenticated user",
+    description:
+      "Get cards assigned to the authenticated user as [{name, shortLink, due, " +
+      "dueComplete, idBoard, idList}]. Without boardId it covers every board, which " +
+      "can be hundreds of cards — pass boardId to get one board's cards instead. Use " +
+      "getCard for a card's full details.",
     annotations: { readOnlyHint: true },
-    inputSchema: { type: "object", properties: {} },
-    run: () => trello("GET", "/members/me/cards"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        boardId: {
+          type: "string",
+          description: "Only this board's cards (URL, shortLink or id). No default: omit for every board.",
+        },
+      },
+    },
+    async run({ boardId } = {}) {
+      // The per-board endpoint needs a real member id — it rejects "me".
+      const cards =
+        boardId === undefined
+          ? await trello("GET", "/members/me/cards", { fields: MY_CARD_FIELDS })
+          : await trello(
+              "GET",
+              `/boards/${cardRef(boardId)}/members/${(await trello("GET", "/members/me", { fields: "id" })).id}/cards`,
+              { fields: MY_CARD_FIELDS },
+            );
+      // Trello always adds `id`; shortLink already identifies the card to every tool.
+      return cards.map(({ id, ...card }) => card);
+    },
   },
 
   // --- Beyond mcp-trello 0.4.0 -------------------------------------------------
@@ -480,9 +502,8 @@ export const TOOLS = {
     run: ({ checklistId, name, checked }) =>
       trello("POST", `/checklists/${checklistId}/checkItems`, {
         name,
-        // Omitted rather than sent as false: Trello defaults it, and an explicit
-        // `checked=false` is indistinguishable from the caller asking to uncheck.
-        checked: checked === undefined ? undefined : checked,
+        // Left undefined when omitted (buildUrl drops it) rather than sent as false.
+        checked,
       }),
   },
 };

@@ -17,6 +17,12 @@ import {
 
 const CARD_URL = /^https:\/\/trello\.com\/c\/([^/?#]+)/i;
 
+// Every board-wide tool reads the same endpoint with one of two field sets: the
+// 4-field summary, or name + shortLink + card-link attachments for the link graph.
+const SUMMARY = { fields: "idShort,shortLink,name,idList" };
+const WITH_LINKS = { fields: "name,shortLink", attachments: true, attachment_fields: "id,url" };
+const boardCards = (board, params) => trello("GET", `/boards/${board}/cards`, params);
+
 // Trello always includes `id` regardless of a fields filter — strip to exactly
 // these four so findCards' payload can't silently grow. It carried labels, idMembers
 // and pos until the snapshot renderer that read them was deleted; nothing consumes
@@ -201,15 +207,13 @@ export const TOOLS = {
     async run({ number, boardId }) {
       const board = resolveBoard(boardId);
       if (!number) throw new Error("number is required");
-      const cards = await trello("GET", `/boards/${board}/cards`, {
-        fields: "idShort,shortLink,name,idList",
-      });
+      const cards = await boardCards(board, SUMMARY);
       // Match on the parsed number, never on a string prefix: "2.1" must not match
       // "2.1.1" (a child) or "2.10" (a sibling), which is exactly what a prefix test
       // gets wrong. cardNumber is the same parser the numbering and parent linkage use.
       const matches = cards
         .filter((c) => cardNumber(c.name) === String(number))
-        .map(({ idShort, shortLink, name, idList }) => ({ idShort, shortLink, name, idList }));
+        .map(pickCardSummary);
       return { number: String(number), matches };
     },
   },
@@ -311,9 +315,7 @@ export const TOOLS = {
     },
     async run({ boardId }) {
       const board = resolveBoard(boardId);
-      const cards = await trello("GET", `/boards/${board}/cards`, {
-        fields: "idShort,shortLink,name,idList",
-      });
+      const cards = await boardCards(board, SUMMARY);
       return cards.map(pickCardSummary);
     },
   },
@@ -350,11 +352,7 @@ export const TOOLS = {
     },
     async run({ boardId }) {
       const board = resolveBoard(boardId);
-      const cards = await trello("GET", `/boards/${board}/cards`, {
-        fields: "name,shortLink",
-        attachments: true,
-        attachment_fields: "id,url",
-      });
+      const cards = await boardCards(board, WITH_LINKS);
       return { boardId: board, ...buildLinkGraph(cards) };
     },
   },
@@ -377,11 +375,7 @@ export const TOOLS = {
     },
     async run({ boardId }) {
       const board = resolveBoard(boardId);
-      const cards = await trello("GET", `/boards/${board}/cards`, {
-        fields: "name,shortLink",
-        attachments: true,
-        attachment_fields: "url",
-      });
+      const cards = await boardCards(board, WITH_LINKS);
       return { boardId: board, ...auditHierarchy(cards) };
     },
   },
@@ -424,11 +418,10 @@ export const TOOLS = {
       // 9.4.2 straight back out, and the board ends up with two unrelated cards under
       // one number. That is not hypothetical: it had already happened three times here
       // (5.4.2, 6.3.3, 9.7.1) before this argument was added.
-      const rawCards = await trello("GET", `/boards/${board}/cards`, {
+      const rawCards = await boardCards(board, {
+        ...WITH_LINKS,
         fields: "shortLink,name,closed",
         filter: "all",
-        attachments: true,
-        attachment_fields: "id,url",
       });
 
       // Numbering wants every card ever issued; the link graph wants only live ones —
@@ -467,11 +460,7 @@ export const TOOLS = {
     },
     async run({ boardId, dryRun = false } = {}) {
       const board = resolveBoard(boardId);
-      const cards = await trello("GET", `/boards/${board}/cards`, {
-        fields: "name,shortLink",
-        attachments: true,
-        attachment_fields: "url",
-      });
+      const cards = await boardCards(board, WITH_LINKS);
       const audit = auditHierarchy(cards);
 
       // One expected parent per fix. `missing` can name several candidate parents when

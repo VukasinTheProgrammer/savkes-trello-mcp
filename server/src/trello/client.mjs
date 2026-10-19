@@ -67,9 +67,10 @@ export class Bucket {
   }
 }
 
-// Trello's published limits, as one module-level pair. Every tool draws from the
-// same allowance, which is the whole point of merging the two servers.
-const BUCKETS = [new Bucket(300, 10_000), new Bucket(100, 10_000)];
+// Trello allows 300 requests / 10s per API key and 100 / 10s per token. One
+// server process uses one key and one token, so the token limit is always the
+// binding one — a single bucket covers both.
+const BUCKET = new Bucket(100, 10_000);
 
 const MAX_ATTEMPTS = 5;
 
@@ -142,13 +143,9 @@ export async function trello(method, path, params = {}) {
   const headers = { Accept: "application/json", Authorization: authHeader() };
   const url = buildUrl(path, params);
   for (let attempt = 1; ; attempt++) {
-    // ponytail: taking both buckets via Promise.all can burn a token in the looser
-    // bucket while still waiting on the tighter one. Harmless at this volume —
-    // upgrade to a single combined gate if the 100/10s bucket starts throttling.
-    await Promise.all(BUCKETS.map((b) => b.take()));
-    // Timeout, not just a retry policy: dispatch in index.mjs is one serialized
-    // promise chain, so a socket that never answers doesn't fail this one call — it
-    // wedges every later request for the rest of the session, with no error to see.
+    await BUCKET.take();
+    // Timeout, not just a retry policy: a socket that never answers would leave
+    // this tool call pending forever, with no error for the model to see.
     const res = await fetch(url, {
       method,
       headers,

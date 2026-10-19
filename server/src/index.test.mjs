@@ -1,8 +1,7 @@
 // Selftest for the trello-board server — no network, no credentials, no test framework.
 //
-//   node server/src/index.mjs --selftest
-//
-// Running this file directly works too; `--selftest` just spawns it.
+//   npm test            (from server/)
+//   node server/src/index.test.mjs
 
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -423,11 +422,8 @@ await assert.rejects(handle({ id: 10, method: "no/such/method" }), (err) => err.
 // the case the partial-line buffer has to survive. The interleaved notification
 // must produce no frame and no stderr.
 //
-// This is NOT a reproduction of the reordering race the serialized dispatch fixes:
-// `ping` settles in microtasks, so no chunk ever arrives mid-await and the old
-// per-chunk `await` loop passes this too. Reproducing it needs a handler slow
-// enough to span a macrotask, i.e. real network I/O, which this selftest refuses
-// to do. Treat these as ordering/framing guards; the race fix is structural.
+// Requests are dispatched concurrently, so replies are compared by id as a set:
+// JSON-RPC matches replies to requests by id, not by order.
 const FRAMES = 20;
 const child = spawn(process.execPath, [path.join(import.meta.dirname, "index.mjs")], {
   stdio: ["pipe", "pipe", "pipe"],
@@ -454,7 +450,7 @@ assert.equal(err, "", `expected empty stderr, got: ${err}`);
 const replies = out.trim().split("\n").map((l) => JSON.parse(l));
 assert.equal(replies.length, FRAMES); // the notification got no reply
 assert.deepEqual(
-  replies.map((r) => r.id),
+  replies.map((r) => r.id).sort((a, b) => a - b),
   Array.from({ length: FRAMES }, (_, i) => i + 1),
 );
 assert.equal(replies.every((r) => r.result && Object.keys(r.result).length === 0), true);
@@ -553,6 +549,10 @@ const canned = (u, method) => {
       { id: "t212", shortLink: "t212", name: "2.1.2. Archived task", pos: 400, idList: "L1", closed: true, attachments: [] },
     ];
   }
+  if (method === "GET" && u.pathname === "/1/members/me") return { id: "member-1" };
+  if (method === "GET" && /^\/1\/(members\/me|boards\/[^/]+\/members\/[^/]+)\/cards$/.test(u.pathname)) {
+    return [{ id: "c1", name: "Mine", shortLink: "m1", idBoard: "board-1" }];
+  }
   if (method === "GET" && /^\/1\/lists\/[^/]+\/cards$/.test(u.pathname)) {
     return [
       { id: "p", name: "2.1. Parent", pos: 1000 },
@@ -600,11 +600,10 @@ assert.deepEqual(
   okText(await callTool("addCard", { listId: "L1", name: "N", description: "D", labels: ["l1", "l2"] }))[0],
   { method: "POST", path: "/1/cards", params: { idList: "L1", name: "N", desc: "D", idLabels: "l1,l2" } },
 );
-// The same call spelled the way trello-card-push's docs used to: desc / idLabels.
-// Both spellings must build a byte-identical request, or the alias is decoration.
-assert.deepEqual(
-  okText(await callTool("addCard", { listId: "L1", name: "N", desc: "D", idLabels: ["l1", "l2"] }))[0],
-  { method: "POST", path: "/1/cards", params: { idList: "L1", name: "N", desc: "D", idLabels: "l1,l2" } },
+// The old API-style spellings are rejected by name, not silently dropped.
+assert.match(
+  (await callTool("addCard", { listId: "L1", name: "N", desc: "D" })).res.content[0].text,
+  /Unknown argument for addCard: desc/,
 );
 // dueDate maps to Trello's `due`; omitted optionals must not appear at all.
 assert.deepEqual(
@@ -747,10 +746,11 @@ assert.equal(fetchPeak, 4, `expected placeCards bounded to 4 in flight, peaked a
 
 // resources/read fetches the underlying endpoint and wraps it in MCP's contents
 // shape. Recent Activity keeps mcp-trello's limit of 50.
-for (const [uri, path, params] of [
+for (const [uri, path, params, body = { ok: true }] of [
   ["trello://board/6a47826d1fa56f9e07523fd4/lists", "/1/boards/6a47826d1fa56f9e07523fd4/lists", {}],
   ["trello://board/6a47826d1fa56f9e07523fd4/activity", "/1/boards/6a47826d1fa56f9e07523fd4/actions", { limit: "50" }],
-  ["trello://me/cards", "/1/members/me/cards", {}],
+  ["trello://me/cards", "/1/members/me/cards", { fields: "name,shortLink,due,dueComplete,idBoard,idList" },
+    [{ id: "c1", name: "Mine", shortLink: "m1", idBoard: "board-1" }]],
 ]) {
   requests.length = 0;
   const read = await handle({ id: 7, method: "resources/read", params: { uri } });
@@ -758,8 +758,22 @@ for (const [uri, path, params] of [
   assert.equal(read.contents.length, 1);
   assert.equal(read.contents[0].uri, uri);
   assert.equal(read.contents[0].mimeType, "application/json");
-  assert.deepEqual(JSON.parse(read.contents[0].text), { ok: true }); // whatever the canned fetch returned
+  assert.deepEqual(JSON.parse(read.contents[0].text), body); // whatever the canned fetch returned
 }
+
+// The two "me" reads are filtered: unfiltered, they overflow a client's output cap.
+const myAll = await callTool("getMyCards");
+assert.deepEqual(okText(myAll), [
+  { method: "GET", path: "/1/members/me/cards", params: { fields: "name,shortLink,due,dueComplete,idBoard,idList" } },
+]);
+// Trello's forced `id` is stripped; shortLink identifies the card.
+assert.deepEqual(JSON.parse(myAll.res.content[0].text), [{ name: "Mine", shortLink: "m1", idBoard: "board-1" }]);
+// One board: resolve the member id first (the per-board endpoint rejects "me").
+assert.deepEqual(
+  okText(await callTool("getMyCards", { boardId: "https://trello.com/b/BS4JBXTn/team-bravo" })).map((r) => r.path),
+  ["/1/members/me", "/1/boards/BS4JBXTn/members/member-1/cards"],
+);
+assert.deepEqual(okText(await callTool("getMyBoards"))[0].params, { fields: "name,shortLink,url,closed" });
 
 // --- Tools added after the merge -------------------------------------------
 // Reads that retire trello-board-ids.md's hand-maintained tables.
@@ -1089,9 +1103,8 @@ assert.match(leakedText, /key=\[redacted\].*token=\[redacted\]/);
 assert.match(leakedText, /Trello 404 Not Found: Cannot GET \/1\/cards\//);
 
 // ---------------------------------------------------------------------------
-// Every request carries an abort signal. Dispatch is one serialized promise chain,
-// so a socket that never answers doesn't fail one call — it wedges every later
-// request for the rest of the session.
+// Every request carries an abort signal, so a socket that never answers fails
+// the call instead of leaving it pending forever.
 let sawSignal;
 globalThis.fetch = async (url, opts = {}) => {
   sawSignal = opts.signal;

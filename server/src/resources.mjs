@@ -8,6 +8,7 @@
 // The registry is rebuilt per request rather than frozen at import: trello/client.mjs reads
 // credentials per call, so TRELLO_BOARD_ID may be set after this module loads.
 
+import { MY_CARD_FIELDS } from "./tools/cards.mjs";
 import { defaultBoard, resolveBoard, trello } from "./trello/client.mjs";
 
 const JSON_MIME = "application/json";
@@ -38,7 +39,7 @@ function registry() {
       uri: "trello://me/cards",
       mimeType: JSON_MIME,
       description: "Cards assigned to the authenticated user",
-      read: () => trello("GET", "/members/me/cards"),
+      read: () => trello("GET", "/members/me/cards", { fields: MY_CARD_FIELDS }),
     },
   ];
 }
@@ -56,6 +57,6 @@ export async function readResource(uri) {
     throw err;
   }
   return {
-    contents: [{ uri, mimeType: entry.mimeType, text: JSON.stringify(await entry.read(), null, 2) }],
+    contents: [{ uri, mimeType: entry.mimeType, text: JSON.stringify(await entry.read()) }],
   };
 }

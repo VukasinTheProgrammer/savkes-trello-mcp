@@ -116,9 +116,9 @@ through the code:
 
 1. **Framing:** `onChunk` (`index.mjs`) buffers stdin and splits on `\n`. A
    partial line stays in the buffer until the rest arrives.
-2. **Queueing:** each complete line is chained onto a single promise
-   (`queue = queue.then(...)`). Requests run one at a time, so responses come
-   back in order.
+2. **Concurrency:** each complete line is dispatched straight away, so a
+   slow Trello call doesn't block a `ping` behind it. Replies can arrive out
+   of order; the client matches them to requests by `id`.
 3. **Parsing:** `dispatch` runs `JSON.parse`. If the message has no `id`,
    it's a notification and never gets a response.
 4. **Routing:** `handle` switches on `method`. For `tools/call` it looks up
@@ -201,7 +201,8 @@ site explains it. They apply to any MCP server you write.
 | **Reject unknown arguments.** Otherwise a `desc:` vs `description:` typo silently creates an empty card. | `validateArgs` |
 | **Negotiate the protocol version, don't echo it.** Answer with a version you actually support. | `negotiateVersion` |
 | **Answer `resources/templates/list` even if it's empty.** If you declare a capability, clients will call it. | `handle` |
-| **Every network call needs a timeout.** With serialized dispatch, one hung socket stalls the whole session. | `client.mjs` `AbortSignal.timeout` |
+| **Every network call needs a timeout.** Otherwise a socket that never answers leaves the call pending forever, with no error for the model to see. | `client.mjs` `AbortSignal.timeout` |
+| **Flush stdout before exiting.** Pipe writes are asynchronous on macOS, so calling `process.exit()` right after the last reply cuts off any reply bigger than the ~8 KB pipe buffer. | `main()` in `index.mjs` |
 | **Bound your retries.** An unbounded 429 loop looks exactly like a hang. | `MAX_ATTEMPTS` |
 | **Keep credentials out of URLs.** Trello's 404 page echoes the request URL, so query-string credentials end up in model context and transcripts. Credentials go in the `Authorization` header, with redaction as a backup. | `authHeader`, `redact` |
 | **Unset env vars may arrive as the literal text `${VAR}`.** Detect that and name the missing variable instead of failing with an opaque 401. | `credential`, `defaultBoard` |

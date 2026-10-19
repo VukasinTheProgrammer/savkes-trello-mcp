@@ -18,14 +18,8 @@
 //   | node server/src/index.mjs
 // Expect exactly four JSON-RPC frames on stdout, nothing else.
 //
-// Self-test (no network, no credentials required) — lives in index.test.mjs,
-// which imports this module's exports; either command runs it:
-//   node server/src/index.mjs --selftest
-//   node server/src/index.test.mjs
+// Tests (no network, no credentials required): `npm test` from server/.
 //
-
-import { spawnSync } from "node:child_process";
-import path from "node:path";
 
 import { PROMPTS } from "./prompts.mjs";
 import { listResources, readResource } from "./resources.mjs";
@@ -181,7 +175,9 @@ export async function handle(msg) {
       const args = params.arguments ?? {};
       validateArgs(params.name, tool.inputSchema, args);
       const result = await tool.run(args);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      // Compact, not pretty-printed: indentation is ~18% of a large result, and
+      // clients cap tool output (Claude Code rejects results over its token limit).
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     } catch (err) {
       return { content: [{ type: "text", text: String(err.message ?? err) }], isError: true };
     }
@@ -193,25 +189,25 @@ export async function handle(msg) {
 }
 
 let buffer = "";
-// Dispatch is serialized through one promise chain. Framing below is synchronous,
-// so a `data` event that arrives mid-await can no longer split a buffer another
-// call is still reading, and frames go out in the order they arrived.
-let queue = Promise.resolve();
+// Requests run concurrently: a slow Trello call doesn't hold up a `ping` or a
+// `tools/list` behind it. Replies can come back out of order, which JSON-RPC
+// allows — the client matches them by `id`. Tracked so stdin closing waits for
+// whatever is still running instead of exiting mid-call.
+const inFlight = new Set();
 
-// Synchronous: drain every complete line out of the buffer before any dispatch runs.
+// Synchronous: drain every complete line out of the buffer before any dispatch runs,
+// so a `data` event can never split a buffer another handler is reading.
 function onChunk(chunk) {
   buffer += chunk;
   const lines = buffer.split("\n");
   buffer = lines.pop() ?? "";
   for (const line of lines) {
     if (!line.trim()) continue;
-    // The .catch() keeps one failure from poisoning the chain: a rejected `queue`
-    // makes every later .then() skip, so the server would go silent for the rest of
-    // the session with no response and no error. dispatch handles its own errors, so
-    // reaching here means something unexpected — log it and keep the chain alive.
-    queue = queue
-      .then(() => dispatch(line))
-      .catch((err) => console.error(`[${SERVER.name}] dispatch failed:`, err?.message ?? err));
+    // dispatch handles its own errors; reaching .catch means something unexpected.
+    const run = dispatch(line)
+      .catch((err) => console.error(`[${SERVER.name}] dispatch failed:`, err?.message ?? err))
+      .finally(() => inFlight.delete(run));
+    inFlight.add(run);
   }
 }
 
@@ -247,22 +243,14 @@ function send(payload) {
 // module for its exports, and attaching stdin listeners there would hold the event
 // loop open and hang the test run instead of letting it exit on its own.
 export function main() {
-  // The selftest lives in its own module — it never runs on the server path. It's
-  // run as a child process rather than imported: the test imports this module, so
-  // importing it back here is a cycle, and with top-level await that deadlocks
-  // outright (node exits 13). Spawning keeps `--selftest` the documented command
-  // with no import cycle.
-  if (process.argv[2] === "--selftest") {
-    const test = path.join(import.meta.dirname, "index.test.mjs");
-    process.exit(spawnSync(process.execPath, [test], { stdio: "inherit" }).status ?? 1);
-  }
-
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", onChunk);
-  // Exit once the queue drains, not on `end` itself — `finally` so a dispatch that
-  // somehow rejects still lets the process exit instead of hanging.
+  // Exit once every in-flight request has answered AND stdout has flushed. Pipe
+  // writes are asynchronous on macOS, so exiting straight after the last reply
+  // truncates any reply bigger than the pipe buffer (~8 KB). The empty write's
+  // callback fires only after every earlier write has gone out.
   process.stdin.on("end", () => {
-    queue.finally(() => process.exit(0));
+    Promise.allSettled(inFlight).then(() => process.stdout.write("", () => process.exit(0)));
   });
 }
 
