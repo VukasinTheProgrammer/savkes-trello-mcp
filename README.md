@@ -58,6 +58,19 @@ server ← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"[
 
 That covers most of what the protocol does.
 
+### Start with the 50-line version
+
+[`examples/minimal.mjs`](examples/minimal.mjs) is a complete MCP server with
+one `echo` tool and nothing else. Read it first: the Trello server is the
+same structure with validation, error handling and the Trello API added.
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}' \
+| node examples/minimal.mjs
+```
+
 ---
 
 ## Architecture
@@ -309,6 +322,26 @@ npm run smoke   # real stdio round trip: prints exactly 4 JSON-RPC frames
 request each tool would send (method, path, params) without calling Trello.
 It also starts the server as a child process and talks to it over real
 stdio.
+
+### Explore it with MCP Inspector
+
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) is the
+official debugging client. It lists a server's tools, resources and prompts
+and lets you call them by hand, so you can test a server without an AI
+client:
+
+```bash
+# browser UI
+npx @modelcontextprotocol/inspector node server/src/index.mjs
+
+# or straight from the terminal
+npx @modelcontextprotocol/inspector --cli node server/src/index.mjs --method tools/list
+npx @modelcontextprotocol/inspector --cli node examples/minimal.mjs \
+  --method tools/call --tool-name echo --tool-arg text=hi
+```
+
+The Trello server reads `TRELLO_API_KEY` / `TRELLO_TOKEN` from your shell.
+Pass a board with `-e TRELLO_BOARD_ID=<id>` before `node`.
 
 ---
 
