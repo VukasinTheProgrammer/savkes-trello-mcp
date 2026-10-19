@@ -7,21 +7,23 @@ Draft Trello-ready cards for a topic into `.claude/tasks/<topic>.md`, for review
 
 ## What this skill does, and what it doesn't
 
-**It does not write the cards.** At story and task level this skill is orchestration: it resolves the parent card, gets the next hierarchy number, reads the parent's acceptance criteria, and hands all of that to the `trello-agent` subagent — which digs through the codebase, decides the breakdown, writes each card's name, description and acceptance criteria, resolves label IDs, and writes the file. This skill then confirms the file exists and prints the agent's receipt.
+**It does not write the cards.** At story and task level this skill is orchestration: it resolves the parent card, gets the next hierarchy number, reads the parent story's acceptance criteria (task level only), and hands all of that to the `trello-agent` subagent — which digs through the codebase, decides the breakdown, writes each card's name, description and acceptance criteria, resolves label IDs, and writes the file. This skill then confirms the file exists and prints the agent's receipt.
 
 `--level epic` is the exception: epics need no codebase digging, so there is no subagent and the main thread drafts them directly.
 
 The output is a **draft**, not a push. Nothing reaches Trello until `/trello-card-push <topic>` runs, which is deliberate — the file is where the cards get reviewed and edited first.
 
 ## Usage
-Call as: `/trello-card-draft <topic> [--level epic|story|task] [--design <file>] [--docs <file>]`
-Default level: `story` (breaking a parent user story into further story cards — existing default behavior).
-`--design` is optional, story/task levels only (skip for epic — too high-level for page markup). File lives in `.claude/references/designs/` (HTML page markup for the page in scope); read it and fold it into the subagent prompt as a "Design reference" block so cards reflect real UI structure (fields, sections, actions) instead of guessing. Pass just the filename (resolved against `.claude/references/designs/`) or a full path.
-`--docs` is optional, story/task levels only. File lives in `.claude/references/docs/` (a markdown spec/requirements doc); read it and fold it into the subagent prompt as a "Doc reference" block so cards are grounded in the actual written requirements instead of guessing. Pass just the filename (resolved against `.claude/references/docs/`) or a full path.
-Example: `/trello-card-draft playwright-tests` (story level), `/trello-card-draft q4-feature-set --level epic`, `/trello-card-draft card-limit-account --level task --design card-limit.html --docs card-limit-spec.md`
+Call as: `/trello-card-draft <topic> [--level epic|story|task] [--parent <number>] [--design <file>] [--docs <file>]`
+Default level: `story` (breaking a parent epic into user story cards).
+`--parent` is the number of the card everything in this run hangs under: an **epic** number at story level (`--parent 2` → stories `2.1`, `2.2`, …), a **story** number at task level (`--parent 2.1` → tasks `2.1.1`, …). Not used at epic level. If it is missing at story or task level, **ask the user which parent** — never guess it from the topic name.
+`--design` is optional, story/task levels only (skip for epic — too high-level for page markup). File lives in `.claude/references/designs/` (HTML page markup for the page in scope) so cards reflect real UI structure instead of guessing. Pass just the filename (resolved against `.claude/references/designs/`) or a full path.
+`--docs` is optional, story/task levels only. File lives in `.claude/references/docs/` (a markdown spec/requirements doc) so cards are grounded in the written requirements. Pass just the filename (resolved against `.claude/references/docs/`) or a full path.
+Both are passed to the subagent as **paths**, never read here — see "Where the files live" below.
+Example: `/trello-card-draft playwright-tests --parent 11` (story level), `/trello-card-draft q4-feature-set --level epic`, `/trello-card-draft card-limit-account --level task --parent 2.1 --design card-limit.html --docs card-limit-spec.md`
 
 ## Board ID reference
-Label and list IDs are board constants shared across skills — resolve every label/list name against [`../../../server/trello-board-ids.md`](../../../server/trello-board-ids.md), not a copy kept here.
+Label IDs are resolved live with `mcp__trello-board__getLabels` (by `trello-agent` at story/task level, by the main thread at epic level). [`../../../server/trello-board-ids.md`](../../../server/trello-board-ids.md) holds a fallback copy, used only if that call fails. The plan file names its list (`Target list: Backlog`); `/trello-card-push` resolves that name to an id.
 
 ## Where the files live
 
@@ -54,7 +56,7 @@ For `--level story` and `--level task` the **subagent** writes this file, header
 ```markdown
 # Task Plan: <Topic>
 Target list: Backlog
-Prefix: <e.g. 11.3, or EPIC for epic level>
+Prefix: <the --parent number: e.g. 2 for stories, 2.1 for tasks; EPIC for epic level>
 Status: draft
 
 ---

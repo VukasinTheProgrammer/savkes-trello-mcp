@@ -28,7 +28,7 @@ export const PROMPTS = {
           `Run /trello-card-draft "${taskName}" to draft the card into ` +
           ".claude/tasks/<topic>.md, then /trello-card-push <topic> to create it. " +
           "That path is what assigns the hierarchy number via nextCardNumbers, resolves " +
-          "and attaches the parent card, and applies label IDs from trello-board-ids.md. " +
+          "and attaches the parent card, and resolves label IDs live with getLabels. " +
           "A bare addCard skips all three and leaves an unnumbered, unattached, " +
           "unlabelled card that auditCardHierarchy will then report as drift.\n\n" +
           "Only fall back to addCard directly if the card is deliberately outside the " +

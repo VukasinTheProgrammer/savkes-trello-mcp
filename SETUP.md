@@ -180,10 +180,10 @@ your first `/trello-card-push`:
 
 - **Set `TRELLO_BOARD_ID`.** It's optional for the server, but the push calls
   `findCards` without a board, so this workflow requires it.
-- **Fill in the List ID map** in `server/trello-board-ids.md` from `getLists`,
-  at least the `Backlog` row. Push looks up the target list's id there and
-  has no live fallback. Label ids are looked up live with `getLabels`; that
-  table is only a fallback.
+- **The plan's `Target list` must exist on the board.** Drafts default to
+  `Backlog`. Push looks the name up live with `getLists`, and if it isn't
+  found it stops before creating anything. Label and list ids are looked up
+  live, so `server/trello-board-ids.md` is only a fallback.
 - Optionally, `.claude/skills/trello-card-draft/references/app-routes.md`:
   your app's page list, if the project has a frontend.
 

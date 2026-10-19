@@ -71,9 +71,12 @@ flowchart TD
 
 ## 3. Phase 1: drafting
 
-`/trello-card-draft <topic> [--level epic|story|task] [--design <file>] [--docs <file>]`
+`/trello-card-draft <topic> [--level epic|story|task] [--parent <number>] [--design <file>] [--docs <file>]`
 (`trello-card-draft/SKILL.md:17`). The default level is `story`. Each run
-works at exactly one level.
+works at exactly one level. `--parent` is the epic number at story level
+(`--parent 2` → `2.1`, `2.2`, …) or the story number at task level
+(`--parent 2.1` → `2.1.1`, …). If it's missing, the skill asks you instead of
+guessing.
 
 ### Task level (the full path)
 
@@ -85,7 +88,7 @@ sequenceDiagram
     participant Agent as trello-agent
     participant Plan as .claude/tasks/topic.md
 
-    You->>Main: /trello-card-draft topic --level task
+    You->>Main: /trello-card-draft topic --level task --parent 2.1
     Main->>MCP: findCard({number: "2.1"})
     MCP-->>Main: matches: exactly one parent (else stop and ask)
     Main->>MCP: nextCardNumbers({under: ["2.1"]})
@@ -107,7 +110,7 @@ sequenceDiagram
 | | Epic | User story | Task |
 |---|---|---|---|
 | Who writes the cards | Main thread itself (`epic.md:11`) | `trello-agent` | `trello-agent` |
-| Parent lookup | none | `findCard(prefix)` | `findCard(prefix)` |
+| Parent (`--parent`) | none | an epic: `findCard("2")` | a story: `findCard("2.1")` |
 | Number source | `nextCardNumbers` → `nextEpic` | `nextUnder[prefix].next` | `nextUnder[prefix].next` |
 | Reads the parent's AC | no | no | yes: `getCard`, falling back to `getCardChecklists` |
 | Labels | `Epic` | `User Story` | `Task` + area + priority |
@@ -241,7 +244,7 @@ deliberate:
 | Agent | MCP tools | Can't, by design |
 |---|---|---|
 | `trello-agent` (writer) | `getLabels` only (`trello-agent.md:4`) | Create or change any card. A draft can never touch the board. |
-| `trello-push-agent` | `findCards`, `listCardAttachments`, `addCard`, `attachCard`, `placeCards` (`trello-push-agent.md:4`) | `moveCard`, `updateCard`, `archiveCard`, `repairCardHierarchy`. When it hits a stop condition, all it can do is report. |
+| `trello-push-agent` | `getLists`, `getCardsByList`, `findCards`, `listCardAttachments`, `addCard`, `attachCard`, `placeCards` (`trello-push-agent.md:4`) | `moveCard`, `updateCard`, `archiveCard`, `repairCardHierarchy`. When it hits a stop condition, all it can do is report. |
 | `board-audit` workflow agents | Read tools only, enforced in the prompt | Write anything |
 
 ---
@@ -251,15 +254,17 @@ deliberate:
 | Id | Source | Fallback |
 |---|---|---|
 | Label ids | `getLabels`, called live by the drafter (`trello-agent.md:63`) | `server/trello-board-ids.md` label table, only if the call fails |
-| List id for `Target list` | `server/trello-board-ids.md` **List ID map**, filled in by hand from `getLists` | **None.** The push stops if the name isn't in the table (`trello-board-ids.md:41`) |
+| List id for `Target list` | `getLists`, called live by the push agent and matched by name | The `server/trello-board-ids.md` List ID map, only if the call fails. No match → the push stops before creating anything |
 | Board | `TRELLO_BOARD_ID`. The push calls `findCards` with no board (`trello-card-push/SKILL.md:54`) | None |
 
 ### Before your first push
 
 1. Set **`TRELLO_BOARD_ID`**. It's optional for the MCP server but
    **required for this workflow**.
-2. Fill in the **List ID map** in `server/trello-board-ids.md` from
-   `getLists`, at least the `Backlog` row. It ships empty.
+2. Make sure the plan's **`Target list`** exists on the board. Drafts
+   default to `Backlog`. If your board has no such list, edit the plan's
+   `Target list:` line before pushing; otherwise the push stops and lists
+   the lists that do exist.
 3. Make sure the board has the labels the drafter uses: `Epic`,
    `User Story`, `Task`, `Frontend`, `Backend`, `DevOps`, `Ai Feature`, and
    `High`/`Medium`/`Low Priority`. A missing label is skipped with a warning,

@@ -4,6 +4,8 @@ Break an existing User Story into implementation-level Task cards. This is the o
 
 ## Steps
 
+The parent is the story number given with `--parent` (e.g. `--parent 2.1` → tasks `2.1.1`, …). No `--parent`? Ask the user which story — do not guess.
+
 1. **Resolve the parent with `mcp__trello-board__findCard`**, passing the prefix as `number`:
 
    ```

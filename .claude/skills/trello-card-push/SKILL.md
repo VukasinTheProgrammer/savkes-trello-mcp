@@ -12,7 +12,9 @@ Example: `/trello-card-push playwright-tests`
 Reads: `.claude/tasks/<topic>.md`
 
 ## Board ID reference
-Label and list IDs are board constants shared across skills — resolve every label/list name against [`../../../server/trello-board-ids.md`](../../../server/trello-board-ids.md), not a copy kept here.
+Label IDs come from the plan file's `Label IDs:` lines — the drafter already resolved them live with `getLabels`. The list id is resolved live in step 2 with `getLists`; [`../../../server/trello-board-ids.md`](../../../server/trello-board-ids.md)'s List ID map is only a fallback if that call fails.
+
+The board is `TRELLO_BOARD_ID`: `findCards` and `getLists` are called without a `boardId`. If either fails with `boardId is required when TRELLO_BOARD_ID is not set`, stop before creating anything and tell the user to set it.
 
 ## How this runs
 
@@ -28,14 +30,14 @@ There is nothing to sync afterwards. No snapshot of the board is kept on disk, s
 
 1. Read `.claude/tasks/<topic>.md`.
    - If `Status: pushed` — report "Already pushed. Edit status to re-push." and stop.
-   - If `Status: draft` — scan every `## <number>. <Name>` section for a `Pushed: [<idShort>] <shortLink>` line. A section carrying one already exists on the board from a prior run — **never call `addCard` for it again.** This is how a re-run after a partial failure tells "already created" apart from "still needs creating" without guessing from the name.
+   - If `Status: draft` — scan every card section (`## <number>. <Name>`, or `## EPIC <N>. <Name>` in an epic plan) for a `Pushed: [<idShort>] <shortLink>` line. A section carrying one already exists on the board from a prior run — **never call `addCard` for it again.** This is how a re-run after a partial failure tells "already created" apart from "still needs creating" without guessing from the name.
    - If **every** section already has a `Pushed:` line: report "Already pushed, nothing to do." Update `Status: draft` → `pushed` and stop — no `findCards`, no `addCard`, no sync. This is the fully-recovered case: every card exists, only the status flip was left undone.
    - Otherwise proceed with the sections that lack a `Pushed:` line.
 
 2. Parse the file:
-   - Extract `Target list` → resolve to list ID using map above.
+   - Extract `Target list` → call `mcp__trello-board__getLists` once and match the name case-insensitively against each list's `name`. If the call fails, fall back to the List ID map in `trello-board-ids.md`. No match either way → stop before creating anything and report the list name and the lists that do exist.
    - Extract any explicit `Parent:` line, if present — file-level header, or a per-group line above a set of sections. Format is `Parent: [idShort] <name>`; only the `[idShort]` matters, since name-matching no longer exists (step 2b resolves by number instead). An explicit line is optional and rare — it's a cross-tree override, not how parent linkage normally works.
-   - For each `## <number>. <Name>` section **that lacks a `Pushed:` line** (step 1's scan), extract:
+   - For each card section (`## <number>. <Name>` or `## EPIC <N>. <Name>`) **that lacks a `Pushed:` line** (step 1's scan), extract:
      - `name`: full heading text (e.g. `11.3.1. Test Login E2E`)
      - `Label IDs`: parse as comma-separated list
      - `parent`: any explicit `Parent:` in scope for this section (may be absent — that's the normal case)
@@ -51,7 +53,7 @@ There is nothing to sync afterwards. No snapshot of the board is kept on disk, s
    2. `^(\d+(?:\.\d+)*)\.?\s` → that number (`0.3.21. Repair the...` → `0.3.21`)
    3. Neither matches → the card has no number; it gets no automatic parent, and only an explicit `Parent:` line can attach it.
 
-   Call `mcp__trello-board__findCards` **once** for the whole board — no `boardId` argument needed, it defaults to `TRELLO_BOARD_ID`. It returns `{idShort, shortLink, name, idList}` for every card, fields-filtered so it stays small even at ~250 cards. This replaces scanning `mcp__trello-board__getCardsByList` per list: that tool returns full unfiltered card objects and can exceed the output cap outright (`getMyCards` returned 369,976 characters).
+   Call `mcp__trello-board__findCards` **once** for the whole board — no `boardId` argument needed, it defaults to `TRELLO_BOARD_ID`. It returns `{idShort, shortLink, name, idList}` for every card, in one request — cheaper than reading the board list by list.
 
    Build two lookups from the result: `idShort → card` (for an explicit override only) and `number → [cards]`, by applying the number extraction above to every card's `name`. There is no `name → [cards]` lookup anymore — nothing in this step matches by name.
 
@@ -99,7 +101,7 @@ There is nothing to sync afterwards. No snapshot of the board is kept on disk, s
    - `description`: formatted description + AC + Parent link
    - `labels`: array of label IDs
 
-   Those two names are the tool's own argument names, **not** Trello's REST field names — `mcp__trello-board__addCard` translates to the REST spelling internally. Its zod schema strips unknown keys silently, so a call written with the REST names raises no error and creates the card with an empty description and no labels. Use only `description` and `labels`.
+   Those two names are the tool's own argument names, **not** Trello's REST field names — `mcp__trello-board__addCard` translates to the REST spelling internally. A call written with the REST names (`desc`, `idLabels`) is rejected with `Unknown argument for addCard` and creates nothing. Use only `description` and `labels`.
 
    **Message B — one message holding both of the following, for that same batch:**
    - `mcp__trello-board__attachCard({ cardId: <parent>, attachCardId: <new card id> })` for every card that passes **both** filters below — child attached to parent, not the reverse, so opening the parent renders each child as a card preview.
@@ -117,7 +119,7 @@ There is nothing to sync afterwards. No snapshot of the board is kept on disk, s
 
 3b. **Put the new cards in hierarchy order.** A new card lands at the bottom of its list; the Backlog reads epic -> its stories -> each story's tasks -> `---` -> next epic. Two cases, and only one needs work:
 
-   **Story or task plans** — every card has a parent number, so after each batch's message B, call once:
+   **Story or task plans** — every card has a parent number, so in each batch's message B, call once:
 
    ```
    mcp__trello-board__placeCards({
@@ -135,7 +137,7 @@ There is nothing to sync afterwards. No snapshot of the board is kept on disk, s
 
    **Epic plans** — no `placeCards` call needed. A whole epic block belongs at the end of the list, which is where new cards go by default. Instead keep the separator invariant: **immediately before creating each epic card, create a card named exactly `---`** in the same list, with no labels and no description. One separator between blocks, none leading, none trailing.
 
-   Check the list's **current last card** each time, and skip the separator when the list is empty or that last card is already a separator. That check is what makes a re-run safe: sections already carrying a `Pushed:` line are skipped entirely, so their separators are never re-created, and an epic created just before a crash leaves the list ending on an epic card — exactly the state that should get a separator before the next one. Separators are not plan sections and never get a `Pushed:` line; the list itself is their record.
+   Check the list's **current last card** each time with `mcp__trello-board__getCardsByList({ listId })` — it returns the list's cards in board order, so the last element is the last card — and skip the separator when the list is empty or that last card is already a separator. That check is what makes a re-run safe: sections already carrying a `Pushed:` line are skipped entirely, so their separators are never re-created, and an epic created just before a crash leaves the list ending on an epic card — exactly the state that should get a separator before the next one. Separators are not plan sections and never get a `Pushed:` line; the list itself is their record.
 
 4. Update the plan file's status: `Status: draft` → `Status: pushed` only if **every** card section now carries a `Pushed:` line — the ones that already had one from a prior run, plus every one that succeeded this run. If even one card lacks a `Pushed:` line (this run's failure, or a card that has now failed across multiple runs), leave `Status: draft` so the plan is never silently abandoned.
 
@@ -144,7 +146,7 @@ There is nothing to sync afterwards. No snapshot of the board is kept on disk, s
    - **Skipped**: N cards that already carried a `Pushed:` line from a prior run — not touched, not duplicated.
    - **Adopted**: N cards found on the board by number in step 2b and marked this run — created by an earlier run that died before marking them. Name each one, so a crash that happened silently becomes visible.
    - **Attached / not attached**: N children linked to their parent; name any card kept despite a failed `attachCard`, and any whose parent number was unresolved or ambiguous.
-   - **Acceptance Criteria**: confirm the bullets went into each card's description as markdown; name any card whose plan section had no AC block at all.
+   - **Acceptance Criteria** (story and task plans; epics have none by design): confirm the bullets went into each card's description as markdown; name any card whose plan section had no AC block at all.
    - **Placement**: the card each batch was placed after, or the `placeCards` error if it failed. For epic plans, whether a `---` separator was created.
    - **Still failing**: N cards, named individually with their error, that lack a `Pushed:` line after this run.
 

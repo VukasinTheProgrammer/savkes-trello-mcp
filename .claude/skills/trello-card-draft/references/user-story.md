@@ -1,23 +1,23 @@
 # Level: user-story
 
-Break an existing parent User Story into further child User Story cards (numbered `<prefix>.N`).
+Break an existing Epic into User Story cards (numbered `<epic>.N`). The parent is the epic number given with `--parent` (e.g. `--parent 2` → stories `2.1`, `2.2`, …). No `--parent`? Ask the user which epic — do not guess.
 
 ## Steps
 
 1. **Resolve the parent with `mcp__trello-board__findCard`**, passing the prefix as `number`:
 
    ```
-   findCard({ number: "11.3" })  ->  { number, matches: [{ idShort, shortLink, name, idList }] }
+   findCard({ number: "2" })  ->  { number, matches: [{ idShort, shortLink, name, idList }] }
    ```
 
-   It matches on the parsed hierarchy number, not a string prefix, so `11.3` claims `11.3. <title>` and never `11.3.1` (a child) or `11.30` (a sibling). One card comes back, not the board.
+   It matches on the parsed hierarchy number, not a string prefix, so `2` claims `EPIC 2. <title>` and never `2.1` (a child) or `20` (another epic). One card comes back, not the board.
 
    - **No match** → the prefix is wrong. Stop and ask which parent was meant.
    - **More than one match** → do not guess the parent; name the collisions and stop.
 
    Keep the returned `shortLink` — later steps need it, and nothing else on the board carries it.
 
-2. **Get the starting number from the tool, never by eye.** Call `mcp__trello-board__nextCardNumbers` with `under: ["11.3"]` and use `nextUnder["11.3"].next`. It is already `max + 1` (or `11.3.1` if the parent has no children yet), counts direct children only, and compares numerically so `11.3.10` beats `11.3.2`. If `parentExists` comes back `false`, the prefix is wrong — stop and re-check the parent card. Both this and step 1 read the live board — there is no local snapshot to lag behind it. For `playwright-tests` the parent is `11.3. Test for e2e` and the prefix is `11.3`.
+2. **Get the starting number from the tool, never by eye.** Call `mcp__trello-board__nextCardNumbers` with `under: ["2"]` and use `nextUnder["2"].next`. It is already `max + 1` (or `2.1` if the epic has no stories yet), counts direct children only, and compares numerically so `2.10` beats `2.2`. If `parentExists` comes back `false`, the prefix is wrong — stop and re-check the parent card. Both this and step 1 read the live board — there is no local snapshot to lag behind it.
 
 3. Read [app-routes.md](app-routes.md) and build an app context string from its routes table. For topics scoped to a specific area (e.g. "wallet", "cards"), include only the relevant routes. For broad topics (e.g. "playwright-tests"), include all routes.
 
@@ -28,9 +28,9 @@ Break an existing parent User Story into further child User Story cards (numbere
 4. Spawn `trello-agent` subagent with this prompt:
    ```
    Level: story
-   Create Trello-ready task cards for: <topic>
-   Parent user story: <parent card name>
-   Task numbering: start at <next number> (e.g. 11.3.2, 11.3.3, ...)
+   Create Trello-ready user story cards for: <topic>
+   Parent epic: <parent card name>
+   Story numbering: start at <next number> (e.g. 2.4, 2.5, ...)
 
    Topic: <topic>
    Plan file: .claude/tasks/<topic>.md
@@ -57,7 +57,7 @@ Break an existing parent User Story into further child User Story cards (numbere
 
 6. Confirm the file exists and its `Status: draft` header is present. If it is missing, the subagent failed — report that and stop. Do **not** reconstruct the cards from the receipt; the manifest holds names only, by design.
 
-7. Report: the receipt manifest verbatim, parent story, target list, path written, next number to use for future additions. Point the user at the file — that is where the card text is reviewed and edited before `/trello-card-push`.
+7. Report: the receipt manifest verbatim, parent epic, target list, path written, next number to use for future additions. Point the user at the file — that is where the card text is reviewed and edited before `/trello-card-push`.
 
 ## Card format
 

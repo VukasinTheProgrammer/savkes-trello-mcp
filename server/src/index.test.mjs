@@ -388,6 +388,7 @@ assert.deepEqual(
     "auditCardHierarchy",
     "findCards",
     "getCard",
+    "getLabels",
     "getLists",
     "getMyCards",
     "getRecentActivity",
