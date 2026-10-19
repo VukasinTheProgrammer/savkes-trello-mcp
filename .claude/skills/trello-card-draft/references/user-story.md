@@ -53,7 +53,7 @@ Break an existing parent User Story into further child User Story cards (numbere
    label with no Priority or Area at this tier — lives in `trello-agent.md`, which the
    agent reads on its own. Only run-specific values belong here.
 
-5. The subagent writes `.claude/tasks/<topic>.md` itself and returns a receipt manifest — card bodies never enter this context. Every card carries exactly one label, `User Story`; the subagent resolves its ID with `mcp__trello-board__getLabels` (see [`../../../agents/trello-agent.md`](../../../agents/trello-agent.md) § Output step 1), falling back to [`../../../trello-mcp/trello-board-ids.md`](../../../trello-mcp/trello-board-ids.md) only if that call fails.
+5. The subagent writes `.claude/tasks/<topic>.md` itself and returns a receipt manifest — card bodies never enter this context. Every card carries exactly one label, `User Story`; the subagent resolves its ID with `mcp__trello-board__getLabels` (see [`../../../agents/trello-agent.md`](../../../agents/trello-agent.md) § Output step 1), falling back to [`../../../../server/trello-board-ids.md`](../../../../server/trello-board-ids.md) only if that call fails.
 
 6. Confirm the file exists and its `Status: draft` header is present. If it is missing, the subagent failed — report that and stop. Do **not** reconstruct the cards from the receipt; the manifest holds names only, by design.
 

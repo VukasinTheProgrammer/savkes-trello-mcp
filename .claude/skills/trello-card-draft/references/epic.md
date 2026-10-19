@@ -14,7 +14,7 @@ Break a feature set / product topic into top-level Epic cards. No parent lookup 
 
    Use real engineering judgement. Each epic = one independently-shippable slice, not a single task.
 
-4. Format into the card format below. Every epic card gets exactly one label: `Epic`. Resolve its ID with `mcp__trello-board__getLabels` — one call, no arguments, returns `[{id, name, color}]` for the board; match `name` case-insensitively. Epic level has no subagent, so this call is the main thread's. [`../../../trello-mcp/trello-board-ids.md`](../../../trello-mcp/trello-board-ids.md) holds a copy of the same table — fallback only, for when `getLabels` fails.
+4. Format into the card format below. Every epic card gets exactly one label: `Epic`. Resolve its ID with `mcp__trello-board__getLabels` — one call, no arguments, returns `[{id, name, color}]` for the board; match `name` case-insensitively. Epic level has no subagent, so this call is the main thread's. [`../../../../server/trello-board-ids.md`](../../../../server/trello-board-ids.md) holds a copy of the same table — fallback only, for when `getLabels` fails.
 
 5. Write snapshot to `.claude/tasks/<topic>.md` using the shared header from `SKILL.md`, then one section per epic below.
 
