@@ -94,10 +94,17 @@ export function auditHierarchy(cards) {
     return card ? (cardNumber(card.name) ?? short) : short;
   };
 
+  // The attachment on `holder` that links to `target` — what detachCard needs.
+  const attachmentId = (holder, target) =>
+    cards
+      .find((c) => c.shortLink === holder)
+      ?.attachments?.find((a) => CARD_URL.exec(a.url ?? "")?.[1] === target)?.id;
+
   const result = {
     ok: 0,
     missing: [],
     wrongParent: [],
+    extraParents: [],
     parentNotFound: [],
     duplicateNumbers: [],
     selfLinks: graph.selfLinks,
@@ -124,8 +131,21 @@ export function auditHierarchy(cards) {
 
     const allowed = new Set(parents.map((p) => p.shortLink));
     const actual = entryFor.get(card.shortLink)?.attachedTo ?? [];
-    if (actual.some((s) => allowed.has(s))) {
-      result.ok += 1;
+    const extra = actual.filter((s) => !allowed.has(s));
+    if (actual.length > extra.length) {
+      // The right parent is linked. Any other card linking to it is still drift:
+      // Trello previews the child under every one of them, so it shows up twice.
+      if (extra.length === 0) {
+        result.ok += 1;
+      } else {
+        result.extraParents.push({
+          number: n,
+          shortLink: card.shortLink,
+          expectedParent: wanted,
+          extraParentNumbers: extra.map(label),
+          detach: extra.map((s) => ({ shortLink: s, attachmentId: attachmentId(s, card.shortLink) })),
+        });
+      }
     } else if (actual.length === 0) {
       result.missing.push({
         number: n,
@@ -362,10 +382,12 @@ export const TOOLS = {
       "Check the board's real card-to-card links against the hierarchy implied by card " +
       "numbers: '1' is an epic, '1.1' a story under it, '1.1.2' a task under that, so a " +
       "card's parent is its number minus the last segment. Read-only — reports drift, " +
-      "changes nothing. Returns { boardId, ok, missing, wrongParent, parentNotFound, " +
-      "duplicateNumbers, selfLinks, unnumbered }, where missing/wrongParent entries carry " +
-      "the shortLinks needed to fix them via attachCard/detachCard. boardId defaults to " +
-      "TRELLO_BOARD_ID.",
+      "changes nothing. Returns { boardId, ok, missing, wrongParent, extraParents, " +
+      "parentNotFound, duplicateNumbers, selfLinks, unnumbered }, where missing/wrongParent " +
+      "entries carry the shortLinks needed to fix them via attachCard/detachCard. " +
+      "extraParents lists cards linked to the right parent AND to other cards; each entry's " +
+      "detach is [{shortLink, attachmentId}], exactly what detachCard needs to remove the " +
+      "extra links. boardId defaults to TRELLO_BOARD_ID.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -443,7 +465,7 @@ export const TOOLS = {
       "parent, so the board's real links match the hierarchy its numbers imply. Fixes " +
       "only the missing-link case: a card whose number says it has a parent and which " +
       "nothing currently links to. Returns { boardId, attached, failed, untouched }, " +
-      "where untouched carries wrongParent / parentNotFound / duplicateNumbers " +
+      "where untouched carries wrongParent / extraParents / parentNotFound / duplicateNumbers " +
       "verbatim from the audit — those need a decision, not a default. Pass " +
       "dryRun: true to get the same report with nothing written. boardId defaults to " +
       "TRELLO_BOARD_ID.",
@@ -482,6 +504,7 @@ export const TOOLS = {
       const untouched = {
         ambiguousParent: ambiguous,
         wrongParent: audit.wrongParent,
+        extraParents: audit.extraParents,
         parentNotFound: audit.parentNotFound,
         duplicateNumbers: audit.duplicateNumbers,
         selfLinks: audit.selfLinks,

@@ -277,7 +277,7 @@ deliberate:
 ```mermaid
 flowchart LR
     A[auditCardHierarchy] -->|missing parent links| R[repairCardHierarchy<br/>dryRun first]
-    A -->|wrong parent, duplicates| H[a human decides]
+    A -->|wrong or extra parent, duplicates| H[a human decides]
     W[board-audit workflow] -->|card-quality findings| H
 ```
 

@@ -53,7 +53,7 @@ phase('Structure')
 const structure = await agent(
   `Audit the structure of Trello board "${boardId}". ${READ_ONLY}
 Call auditCardHierarchy and listBoardCardLinks, and findCards to list the epics (cards named "EPIC N. …").
-Return the hierarchy problems (missing / wrongParent / parentNotFound / duplicateNumbers / selfLinks),
+Return the hierarchy problems (missing / wrongParent / extraParents / parentNotFound / duplicateNumbers / selfLinks),
 the stale links, and every epic's number, name and shortLink.`,
   {
     phase: 'Structure',

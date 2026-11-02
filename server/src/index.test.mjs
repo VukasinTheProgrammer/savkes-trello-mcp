@@ -85,11 +85,26 @@ assert.deepEqual(selfGraph.selfLinks, ["s1"]);
 assert.equal(selfGraph.cards.length, 0);
 
 const audit = auditHierarchy([
-  { shortLink: "e0", name: "EPIC 0. Planning", attachments: [{ url: "https://trello.com/c/s03" }] },
-  { shortLink: "s03", name: "0.3. Skills", attachments: [{ url: "https://trello.com/c/t1" }] },
+  {
+    shortLink: "e0",
+    name: "EPIC 0. Planning",
+    attachments: [
+      { id: "a-e0-s03", url: "https://trello.com/c/s03" },
+      { id: "a-e0-t4", url: "https://trello.com/c/t4" },
+    ],
+  },
+  {
+    shortLink: "s03",
+    name: "0.3. Skills",
+    attachments: [
+      { id: "a-s03-t1", url: "https://trello.com/c/t1" },
+      { id: "a-s03-t4", url: "https://trello.com/c/t4" },
+    ],
+  },
   { shortLink: "t1", name: "0.3.1. Attached right", attachments: [] },
   { shortLink: "t2", name: "0.3.2. Missing parent link", attachments: [] },
   { shortLink: "t3", name: "0.3.3. Wrong parent", attachments: [] },
+  { shortLink: "t4", name: "0.3.4. Right parent plus an extra one", attachments: [] },
   { shortLink: "x9", name: "9.9.9. Parent absent", attachments: [] },
   { shortLink: "sep", name: "---", attachments: [] },
 ]);
@@ -100,6 +115,18 @@ assert.deepEqual(
 );
 assert.deepEqual(audit.parentNotFound.map((p) => p.number), ["9.9.9"]);
 assert.equal(audit.unnumbered, 1);
+// Linked to the right parent is not enough: a second, wrong parent still shows the
+// card twice on the board. It is reported with the exact attachment to detach, and
+// not counted as ok.
+assert.deepEqual(audit.extraParents, [
+  {
+    number: "0.3.4",
+    shortLink: "t4",
+    expectedParent: "0.3",
+    extraParentNumbers: ["0"],
+    detach: [{ shortLink: "e0", attachmentId: "a-e0-t4" }],
+  },
+]);
 
 // findCard's matching rule, exercised through the parser it delegates to: a prefix
 // test would wrongly claim "2.1.1" and "2.10" as matches for "2.1".
@@ -820,6 +847,7 @@ assert.deepEqual(
 //   2.1  no parent link at all, exactly one candidate parent  -> fixable
 //   3.1  its parent "3" is not on the board                   -> parentNotFound
 //   9.9  linked, but to 9.1 instead of EPIC 9                  -> wrongParent
+//   9.2  linked to EPIC 9 and also to 9.1                      -> extraParents
 //   4.1  two cards are numbered "4", so the parent is ambiguous -> left alone
 // Only the first is attachable without guessing; the rest need a human decision,
 // which is the distinction the tool exists to make.
@@ -827,9 +855,18 @@ const REPAIR_BOARD = [
   { shortLink: "e2", name: "EPIC 2. Card Limit", attachments: [] },
   { shortLink: "s21", name: "2.1. Backend enforcement", attachments: [] },
   { shortLink: "s31", name: "3.1. Orphan", attachments: [] },
-  { shortLink: "e9", name: "EPIC 9. Other", attachments: [{ url: "https://trello.com/c/s91" }] },
+  {
+    shortLink: "e9",
+    name: "EPIC 9. Other",
+    attachments: [{ url: "https://trello.com/c/s91" }, { url: "https://trello.com/c/s92" }],
+  },
   { shortLink: "s99", name: "9.9. Wrongly parented", attachments: [] },
-  { shortLink: "s91", name: "9.1. Correct", attachments: [{ url: "https://trello.com/c/s99" }] },
+  {
+    shortLink: "s91",
+    name: "9.1. Correct",
+    attachments: [{ url: "https://trello.com/c/s99" }, { url: "https://trello.com/c/s92" }],
+  },
+  { shortLink: "s92", name: "9.2. Doubly parented", attachments: [] },
   { shortLink: "d4a", name: "EPIC 4. Dup", attachments: [] },
   { shortLink: "d4b", name: "4. Dup again", attachments: [] },
   { shortLink: "s41", name: "4.1. Child of a duplicated number", attachments: [] },
@@ -857,6 +894,7 @@ assert.deepEqual(
 // detaching first, which is a decision this tool does not make on its own.
 assert.deepEqual(dryOut.untouched.parentNotFound.map((p) => p.number), ["3.1"]);
 assert.deepEqual(dryOut.untouched.wrongParent.map((p) => p.number), ["9.9"]);
+assert.deepEqual(dryOut.untouched.extraParents.map((p) => p.number), ["9.2"]);
 assert.deepEqual(dryOut.untouched.ambiguousParent.map((p) => p.number), ["4.1"]);
 assert.deepEqual(
   dryOut.untouched.ambiguousParent[0].expectedParentShortLinks.sort(),
