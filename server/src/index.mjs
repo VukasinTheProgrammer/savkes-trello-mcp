@@ -26,12 +26,13 @@ import { listResources, readResource } from "./resources.mjs";
 import { TOOLS as CARD_TOOLS } from "./tools/cards.mjs";
 import { TOOLS as FIELD_TOOLS } from "./tools/fields.mjs";
 import { TOOLS as HIERARCHY_TOOLS } from "./tools/hierarchy.mjs";
+import { TOOLS as REPORT_TOOLS } from "./tools/reports.mjs";
 
 // The selftest asserts the full name list, so a collision between the two halves shows
 // up as a short count — which is also why no total is written here: a number in a
 // comment goes stale the first time a tool is added, and the selftest already holds
 // the real one.
-export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS, ...FIELD_TOOLS };
+export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS, ...FIELD_TOOLS, ...REPORT_TOOLS };
 
 // TRELLO_READONLY=1 (or true/yes) serves only tools annotated readOnlyHint: true, for
 // unattended runs and anyone who wants the model unable to write. Deny by default: a

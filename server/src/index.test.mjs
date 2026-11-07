@@ -20,6 +20,17 @@ import {
   parentNumber,
   spreadPositions,
 } from "./utils/numbering.mjs";
+import {
+  buildReport,
+  buildTree,
+  compareNumbers,
+  countCriteria,
+  doneListTest,
+  renderMermaid,
+  renderOutline,
+  renderReport,
+  scopeTo,
+} from "./utils/rollup.mjs";
 
 const graph = buildLinkGraph([
   {
@@ -234,7 +245,7 @@ assert.deepEqual(spreadPositions(1000, 1001, 3), [1000.25, 1000.5, 1000.75]);
 // tools = 40. A name collision between the halves would silently drop a tool, so the
 // count is asserted alongside the names. This is the only place the total is written down.
 const list = await handle({ id: 1, method: "tools/list" });
-assert.equal(list.tools.length, 40);
+assert.equal(list.tools.length, 42);
 assert.deepEqual(
   list.tools.map((t) => t.name).sort(),
   [
@@ -255,6 +266,7 @@ assert.deepEqual(
     "detachCard",
     "findCard",
     "findCards",
+    "getBoardMap",
     "getBoardMembers",
     "getCard",
     "getCardChecklists",
@@ -266,6 +278,7 @@ assert.deepEqual(
     "getMyBoards",
     "getMyCards",
     "getRecentActivity",
+    "getStatusReport",
     "listBoardCardLinks",
     "listCardAttachments",
     "moveCard",
@@ -280,6 +293,7 @@ assert.deepEqual(
     "updateLabel",
   ],
 );
+
 // Label and custom-field tools reject bad input before any request is sent, so these
 // need no fetch recorder.
 const rejects = async (name, args, pattern) => {
@@ -319,7 +333,7 @@ assert.equal(
 for (const writer of ["addCard", "updateCard", "archiveCard", "detachCard", "repairCardHierarchy", "placeCards"]) {
   assert.equal(readOnlyNames.includes(writer), false, `${writer} must be hidden in read-only mode`);
 }
-for (const reader of ["getCard", "findCards", "auditCardHierarchy", "nextCardNumbers"]) {
+for (const reader of ["getCard", "findCards", "auditCardHierarchy", "nextCardNumbers", "getStatusReport", "getBoardMap"]) {
   assert.equal(readOnlyNames.includes(reader), true, `${reader} must stay available in read-only mode`);
 }
 process.env.TRELLO_READONLY = "1";
@@ -1233,6 +1247,240 @@ globalThis.fetch = async (url, opts = {}) => {
 await handle({ id: 1, method: "tools/call", params: { name: "getMyCards", arguments: {} } });
 assert.ok(sawSignal instanceof AbortSignal, "fetch was called with no abort signal");
 assert.equal(sawSignal.aborted, false);
+
+// ---------------------------------------------------------------------------
+// Roll-up, status report and board map, against one fixture board.
+{
+  const DAY = 86_400_000;
+  const AC =
+    "**Acceptance Criteria:**\n" +
+    "- **Given** a user\n  **When** they sign in\n  **Then** they land home\n" +
+    "- **Given** a bad password\n  **When** they sign in\n  **Then** they see an error";
+  const listNames = { L1: "Backlog", L2: "Current Sprint Backlog", L3: "Done" };
+  const checklists = [
+    { id: "ch1", idCard: "c22", name: "Acceptance Criteria", checkItems: [{ name: "a" }, { name: "b" }, { name: "c" }] },
+  ];
+  // Offsets end in .5 so a few milliseconds of test runtime can't tip a day count.
+  const makeFixture = (now) => {
+    const ago = (days) => new Date(now - days * DAY).toISOString();
+    return [
+      { id: "c1", name: "EPIC 1. Auth", idList: "L1" },
+      { id: "c11", name: "1.1. Login", idList: "L1", desc: AC },
+      { id: "c111", name: "1.1.1. Form", idList: "L3", dateLastActivity: ago(3) },
+      { id: "c112", name: "1.1.2. API", idList: "L3", dateLastActivity: ago(2) },
+      { id: "c12", name: "1.2. Reset password", idList: "L1", desc: "Nothing written yet." },
+      { id: "c121", name: "1.2.1. Email", idList: "L2", labels: [{ name: "Blocked" }], due: ago(4.5), dateLastActivity: ago(30.5) },
+      { id: "c122", name: "1.2.2. Page", idList: "L1", dateLastActivity: ago(1) },
+      { id: "cx", name: "1.3. Archived", idList: "L1", closed: true },
+      { id: "c2", name: "EPIC 2. Reports", idList: "L1" },
+      { id: "c22", name: "2.2. Export", idList: "L1" },
+      { id: "c221", name: "2.2.1. CSV", idList: "L3" },
+      { id: "c210", name: "2.10. Archive old reports", idList: "L3" },
+      { id: "c111b", name: "1.1.1. Form again", idList: "L1" },
+      { id: "c991", name: "9.9.1. Orphan", idList: "L1", dateLastActivity: ago(2) },
+      { id: "sep", name: "---", idList: "L1" },
+    ];
+  };
+  const now = Date.parse("2026-11-06T12:00:00Z");
+  const cards = makeFixture(now).filter((c) => !c.closed);
+  const tree = buildTree({ cards, lists: listNames, checklists: { c22: checklists } });
+
+  // Numbers sort as numbers, so 2.2 comes before 2.10.
+  assert.equal(compareNumbers("2.2", "2.10") < 0, true);
+  assert.equal(compareNumbers("1", "1.1") < 0, true);
+  assert.deepEqual(tree.nodes.get("2").children.map((n) => n.number), ["2.2", "2.10"]);
+
+  // Roll-up counts work items (leaves); orphans stay in as roots; duplicates and the
+  // separator are set aside, not counted.
+  assert.deepEqual(tree.roots.map((r) => r.number), ["1", "2", "9.9.1"]);
+  assert.equal(tree.nodes.get("9.9.1").orphan, true);
+  assert.deepEqual(tree.duplicates, [{ number: "1.1.1", shortLink: undefined }]);
+  assert.equal(tree.unnumbered, 1);
+  const pct = (n) => [tree.nodes.get(n).done, tree.nodes.get(n).total, tree.nodes.get(n).percent];
+  assert.deepEqual(pct("1"), [2, 4, 50]);
+  assert.deepEqual(pct("1.1"), [2, 2, 100]);
+  assert.deepEqual(pct("1.2"), [0, 2, 0]);
+  assert.deepEqual(pct("2"), [2, 2, 100]);
+  // A parent dragged into Done with open work under it is still unfinished.
+  const early = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L3" },
+      { id: "b", name: "1.1. Y", idList: "L1" },
+    ],
+    lists: listNames,
+  });
+  assert.equal(early.nodes.get("1").percent, 0);
+  // 249 of 250 must not round up to 100.
+  const nearly = buildTree({
+    cards: Array.from({ length: 250 }, (_, i) => ({ id: `n${i}`, name: `EPIC ${i + 1}. E`, idList: i ? "L3" : "L1" })),
+    lists: listNames,
+  });
+  assert.equal(buildReport(nearly.roots, { now }).progress.percent, 99);
+
+  // What counts as done, and as acceptance criteria.
+  const isDone = doneListTest();
+  for (const yes of ["Done", " done ", "Shipped", "Completed", "Done (Q3)"]) assert.equal(isDone(yes), true, yes);
+  for (const no of ["Doing", "Undone", "Backlog", undefined]) assert.equal(isDone(no), false, String(no));
+  assert.equal(doneListTest(["Live"])("live"), true);
+  assert.equal(doneListTest(["Live"])("Done"), false);
+  assert.equal(
+    buildTree({ cards: [{ id: "a", name: "EPIC 1. X", idList: "L1", dueComplete: true }], lists: listNames }).nodes.get("1").isDone,
+    true,
+  );
+  assert.equal(countCriteria(AC), 2);
+  assert.equal(countCriteria("Given the above, we ship."), 0, "a sentence starting with Given is not a criterion");
+  // The one-line bullet form the card agent writes.
+  assert.equal(
+    countCriteria("- **Given** a card. **When** I freeze it. **Then** it is blocked.\n- **Given** x. **When** y. **Then** z."),
+    2,
+  );
+  assert.equal(countCriteria("", [{ name: "acceptance criteria", checkItems: [{}, {}, {}] }, { name: "Todo", checkItems: [{}] }]), 3);
+
+  // The data behind the report.
+  const report = buildReport(tree.roots, { now, staleDays: 14 });
+  assert.deepEqual(report.progress, { done: 4, total: 7, percent: 57 });
+  assert.deepEqual(report.readyForSignOff.items.map((s) => [s.number, s.criteria]), [["1.1", 2], ["2.2", 3]]);
+  assert.deepEqual(report.attention.storiesWithoutCriteria.items.map((s) => s.number), ["1.2", "2.10"]);
+  assert.deepEqual(report.attention.blocked.items.map((c) => c.number), ["1.2.1"]);
+  assert.deepEqual(report.attention.overdue.items.map((c) => [c.number, c.daysLate]), [["1.2.1", 5]]);
+  assert.deepEqual(report.attention.stale.items.map((c) => [c.number, c.daysIdle]), [["1.2.1", 30]]);
+  assert.deepEqual(report.openByList, { "Current Sprint Backlog": 1, Backlog: 2 });
+  // Idle time is about work items: an epic nobody touched is not "idle".
+  assert.equal(report.attention.stale.items.some((c) => c.number === "1"), false);
+
+  // Lists are capped but the count is not.
+  const busy = buildTree({
+    cards: Array.from({ length: 25 }, (_, i) => ({ id: `s${i}`, name: `EPIC ${i + 1}. E`, idList: "L1", dateLastActivity: "2020-01-01T00:00:00Z" })),
+    lists: listNames,
+  });
+  const busyStale = buildReport(busy.roots, { now }).attention.stale;
+  assert.equal(busyStale.count, 25);
+  assert.equal(busyStale.items.length, 10);
+
+  const md = renderReport("Acme delivery", report, { now });
+  assert.match(md, /^# Delivery status: Acme delivery\n_2026-11-06_/);
+  assert.match(md, /\*\*57% complete\.\*\* 4 of 7 work items done across 3 epics\./);
+  assert.match(md, /\| EPIC 1\. Auth \| █████░░░░░ 50% \| 2 \/ 4 \|/);
+  assert.match(md, /\| EPIC 2\. Reports \| ██████████ 100% \| 2 \/ 2 \|/);
+  assert.match(md, /## Ready for sign-off\n- \*\*1\.1\. Login\*\*: every work item done, 2 acceptance criteria\n- \*\*2\.2\. Export\*\*/);
+  assert.match(md, /\*\*Blocked \(1\):\*\* 1\.2\.1\. Email \[Current Sprint Backlog\]/);
+  assert.match(md, /\*\*Overdue \(1\):\*\* 1\.2\.1\. Email, 5 days late/);
+  assert.match(md, /\*\*No activity for 14\+ days \(1\):\*\* 1\.2\.1\. Email .*idle 30 days/);
+  assert.match(md, /Backlog: 2 · Current Sprint Backlog: 1/);
+  assert.doesNotMatch(md, /1\.3\. Archived/, "archived cards stay out");
+  // A clean board says so instead of printing an empty heading.
+  const calm = buildTree({ cards: [{ id: "a", name: "EPIC 1. X", idList: "L3", desc: "" }], lists: listNames });
+  assert.match(renderReport("B", buildReport(calm.roots, { now }), { now }), /Nothing needs attention\./);
+
+  // Board map.
+  const outline = renderOutline(tree.roots).split("\n");
+  assert.equal(outline[0], "EPIC 1. Auth  █████░░░░░ 50% (2/4)");
+  assert.ok(outline.includes("├─ 1.1. Login  ██████████ 100% (2/2)"));
+  assert.ok(outline.includes("│  └─ 1.1.2. API  ✓ Done"));
+  assert.ok(outline.includes("   ├─ 1.2.1. Email  ○ Current Sprint Backlog [blocked]"));
+  assert.ok(outline.includes("└─ 1.2. Reset password  ░░░░░░░░░░ 0% (0/2)"));
+  assert.equal(renderOutline(tree.roots, 1).split("\n").length, 3, "depth 1 draws epics only");
+  assert.equal(renderOutline(scopeTo(tree, "1.2")).split("\n").length, 3, "a scoped story still draws itself");
+
+  const mermaid = renderMermaid(tree.roots);
+  assert.match(mermaid, /^flowchart TD\n/);
+  assert.match(mermaid, /n1\["EPIC 1\. Auth<br\/>50%"\]:::partial/);
+  assert.match(mermaid, /n1_1_1\["1\.1\.1\. Form"\]:::done/);
+  assert.match(mermaid, /n1_2_2\["1\.2\.2\. Page"\]:::open/);
+  assert.match(mermaid, /n1 --> n1_1\b/);
+  assert.match(mermaid, /classDef done /);
+  const nasty = buildTree({ cards: [{ id: "q", name: 'EPIC 7. Say "hi" #1 [x]', idList: "L1" }], lists: listNames });
+  assert.match(renderMermaid(nasty.roots), /n7\["EPIC 7\. Say #quot;hi#quot; #35;1 \[x\]"\]/);
+
+  assert.deepEqual(scopeTo(tree, "1").map((n) => n.number), ["1"]);
+  assert.deepEqual(scopeTo(tree, undefined), tree.roots);
+  assert.throws(() => scopeTo(tree, "9"), /No card numbered "9" on this board\. Top-level numbers: 1, 2\./);
+
+  // The tools, over the real dispatch path with a mocked board.
+  let mockCards = makeFixture(Date.now());
+  const sent = [];
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url));
+    sent.push({ path: u.pathname, params: Object.fromEntries(u.searchParams) });
+    const bodies = {
+      "/1/boards/BX": { name: "Acme delivery" },
+      "/1/boards/BX/lists": Object.entries(listNames).map(([id, name]) => ({ id, name })),
+      "/1/boards/BX/cards": mockCards,
+      "/1/boards/BX/checklists": checklists,
+    };
+    return u.pathname in bodies
+      ? new Response(JSON.stringify(bodies[u.pathname]), { status: 200 })
+      : new Response(`not mocked: ${u.pathname}`, { status: 404, statusText: "Not Found" });
+  };
+  const call = async (name, args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 7, method: "tools/call", params: { name, arguments: { boardId: "BX", ...args } } });
+    return { ...r, data: r.isError ? null : JSON.parse(r.content[0].text), text: r.content[0].text };
+  };
+
+  const rep = await call("getStatusReport");
+  assert.notEqual(rep.isError, true, rep.text);
+  assert.equal(rep.data.board, "Acme delivery");
+  assert.equal(rep.data.format, "markdown");
+  assert.match(rep.data.report, /\*\*57% complete\.\*\*/);
+  assert.match(rep.data.report, /1\.2\.1\. Email, 5 days late/);
+  // The duplicate and the orphan are surfaced, with the tool that sorts them out.
+  assert.match(rep.data.report, /1 duplicate and 1 orphaned card numbers.*auditCardHierarchy/);
+  // Four reads, all GET, descriptions requested for the criteria count.
+  assert.deepEqual(sent.map((r) => r.path).sort(), ["/1/boards/BX", "/1/boards/BX/cards", "/1/boards/BX/checklists", "/1/boards/BX/lists"]);
+  assert.match(sent.find((r) => r.path.endsWith("/cards")).params.fields, /desc.*labels/);
+  // None of the description text comes back to the caller.
+  assert.doesNotMatch(rep.text, /they land home/);
+
+  const json = await call("getStatusReport", { format: "json" });
+  assert.deepEqual(json.data.progress, { done: 4, total: 7, percent: 57 });
+  assert.deepEqual(json.data.warnings, { duplicateNumbers: 1, orphans: 1 });
+  assert.equal(json.data.report, undefined);
+
+  const scoped = await call("getStatusReport", { epic: "2", format: "json" });
+  assert.deepEqual(scoped.data.progress, { done: 2, total: 2, percent: 100 });
+  assert.deepEqual(scoped.data.epics.map((e) => e.number), ["2"]);
+
+  // doneLists renames the Done list; with a name nothing matches, nothing is finished.
+  const noneDone = await call("getStatusReport", { doneLists: ["Live"], format: "json" });
+  assert.equal(noneDone.data.progress.done, 0);
+
+  for (const [args, pattern] of [
+    [{ epic: "9" }, /No card numbered "9" on this board\. Top-level numbers: 1, 2\./],
+    [{ format: "pdf" }, /format must be one of "markdown", "json", got "pdf"/],
+    [{ staleDays: 0 }, /staleDays must be a positive number/],
+    [{ doneLists: "Done" }, /doneLists for getStatusReport must be array, got string/],
+  ]) {
+    const bad = await call("getStatusReport", args);
+    assert.equal(bad.isError, true, JSON.stringify(args));
+    assert.match(bad.text, pattern);
+  }
+
+  const outlineMap = await call("getBoardMap");
+  assert.equal(outlineMap.data.format, "outline");
+  assert.match(outlineMap.data.map, /^EPIC 1\. Auth {2}█████░░░░░ 50% \(2\/4\)\n/);
+  const flow = await call("getBoardMap", { format: "mermaid", epic: "1", depth: 2 });
+  assert.match(flow.data.map, /^flowchart TD/);
+  assert.match(flow.data.map, /n1_1\[/);
+  assert.doesNotMatch(flow.data.map, /n1_1_1\[/, "depth 2 stops at stories");
+  assert.doesNotMatch(flow.data.map, /n2\[/, "epic 1 only");
+  for (const [args, pattern] of [
+    [{ format: "svg" }, /format must be one of "outline", "mermaid", got "svg"/],
+    [{ depth: 0 }, /depth must be a whole number of 1 or more/],
+    [{ depth: 1.5 }, /depth must be a whole number of 1 or more/],
+    [{ epic: "40" }, /No card numbered "40"/],
+  ]) {
+    const bad = await call("getBoardMap", args);
+    assert.equal(bad.isError, true, JSON.stringify(args));
+    assert.match(bad.text, pattern);
+  }
+
+  // A board with no numbered cards says what the tools look for, rather than printing 0%.
+  mockCards = [{ id: "z", name: "Fix the printer", idList: "L1" }];
+  const empty = await call("getStatusReport");
+  assert.equal(empty.isError, true);
+  assert.match(empty.text, /No numbered cards on this board \(1 cards, none named like "EPIC 1\./);
+}
 
 globalThis.fetch = realFetch;
 
