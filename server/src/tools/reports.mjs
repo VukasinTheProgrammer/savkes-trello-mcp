@@ -15,25 +15,28 @@ import {
 
 const CARD_READ_LIMIT = 1000;
 
-// Four reads, in parallel. Descriptions come along only because acceptance criteria are
-// counted from them; none of that text reaches the caller, which gets counts.
-async function loadTree(board, doneLists) {
+// Reads in parallel. Descriptions and checklists are only needed to count acceptance
+// criteria, so the board map (criteria: false) skips both; the report reads them and
+// returns counts, never the text.
+async function loadTree(board, doneLists, { criteria = true } = {}) {
   const [info, lists, cards, checklists] = await Promise.all([
     trello("GET", `/boards/${board}`, { fields: "name" }),
-    // filter=all: cards in an archived list still need the list's name to be read as done.
+    // filter=all, so a card is never shown under "(unknown list)" because its list was archived.
     trello("GET", `/boards/${board}/lists`, { fields: "name", filter: "all" }),
+    // Trello's default "visible" filter already leaves archived cards out.
     trello("GET", `/boards/${board}/cards`, {
-      fields: "name,shortLink,idList,due,dueComplete,dateLastActivity,desc,labels,closed",
+      fields: `name,shortLink,idList,due,dueComplete,dateLastActivity,labels${criteria ? ",desc" : ""}`,
     }),
-    trello("GET", `/boards/${board}/checklists`, { fields: "name,idCard", checkItem_fields: "name,state" }),
+    criteria
+      ? trello("GET", `/boards/${board}/checklists`, { fields: "name,idCard", checkItem_fields: "name,state" })
+      : [],
   ]);
 
   const checklistsByCard = {};
   for (const list of checklists) (checklistsByCard[list.idCard] ??= []).push(list);
 
   const tree = buildTree({
-    // Archived cards come back with closed: true when the endpoint is asked for them.
-    cards: cards.filter((c) => !c.closed),
+    cards,
     lists: Object.fromEntries(lists.map((l) => [l.id, l.name])),
     checklists: checklistsByCard,
     isDoneList: doneListTest(doneLists),
@@ -69,8 +72,9 @@ export const TOOLS = {
       "A card counts as done when it sits in a Done-style list or its due date is ticked " +
       "complete; pass doneLists if the board names that list differently. By default " +
       "returns { boardId, board, format, report } where report is a markdown write-up: " +
-      "progress by epic, stories ready for sign-off (every work item done and acceptance " +
-      "criteria present), what is blocked, overdue or idle, and where the open work sits. " +
+      "progress by epic (items, each with its tier), stories ready for sign-off (every work item done and acceptance " +
+      "criteria present), what is blocked, overdue or idle, cards whose parent number is " +
+      "missing, and where the open work sits. " +
       "With format \"json\" it returns the same numbers as structured fields instead. " +
       "Read-only. Use getBoardMap to see the tree itself and auditCardHierarchy to check " +
       "that the card links match the numbers. boardId defaults to TRELLO_BOARD_ID.",
@@ -154,7 +158,7 @@ export const TOOLS = {
       oneOf("format", format, ["outline", "mermaid"]);
       if (!Number.isInteger(depth) || depth < 1) throw new Error(`depth must be a whole number of 1 or more, got ${depth}`);
       const board = resolveBoard(boardId);
-      const { name, tree } = await loadTree(board, doneLists);
+      const { name, tree } = await loadTree(board, doneLists, { criteria: false });
       const roots = scopeTo(tree, epic);
       const map = format === "mermaid" ? renderMermaid(roots, depth) : renderOutline(roots, depth);
       return { boardId: board, board: name, format, map };

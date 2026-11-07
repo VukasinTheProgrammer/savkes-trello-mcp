@@ -1356,6 +1356,11 @@ assert.equal(sawSignal.aborted, false);
     lists: { L9: "Blocked" },
   });
   assert.equal(parked.nodes.get("1.1.1").blocked, true);
+  // The label has to start with "block": Unblocked and Blockchain are not blockers.
+  const labelled = (name) =>
+    buildTree({ cards: [{ id: "a", name: "EPIC 1. X", idList: "L1", labels: [{ name }] }], lists: listNames }).nodes.get("1").blocked;
+  for (const yes of ["Blocked", "blocked: waiting on API", "Blocker", "Blocking"]) assert.equal(labelled(yes), true, yes);
+  for (const no of ["Unblocked", "Blockchain", "Not blocked"]) assert.equal(labelled(no), false, no);
   assert.deepEqual(buildReport(parked.roots, { now }).attention.blocked.items.map((c) => c.number), ["1.1.1"]);
   // Blocked and overdue list the work item once, not once per level.
   const stacked = buildTree({
@@ -1407,7 +1412,17 @@ assert.equal(sawSignal.aborted, false);
 
   const md = renderReport("Acme delivery", report, { now });
   assert.match(md, /^# Delivery status: Acme delivery\n_2026-11-06_/);
-  assert.match(md, /\*\*57% complete\.\*\* 4 of 7 work items done across 3 epics\./);
+  assert.match(md, /\*\*57% complete\.\*\* 4 of 7 work items done across 2 epics, plus 1 card whose parent is missing\./);
+  // The orphan is counted in the totals but listed on its own, not as an epic.
+  assert.deepEqual(report.items.map((e) => [e.number, e.tier]), [["1", "epic"], ["2", "epic"]]);
+  assert.deepEqual(report.attention.missingParent.items, [{ number: "9.9.1", name: "9.9.1. Orphan", expectedParent: "9.9" }]);
+  assert.match(md, /\*\*Parent card missing \(1\):\*\* 9\.9\.1\. Orphan \(no 9\.9\)/);
+  assert.doesNotMatch(md, /\| 9\.9\.1\. Orphan \|/);
+  // Scoped to a story, the report calls it a story and its children tasks.
+  const storyReport = buildReport(scopeTo(tree, "1.2"), { now });
+  assert.deepEqual(storyReport.items.map((e) => e.tier), ["story"]);
+  assert.deepEqual(storyReport.items[0].children.map((c) => c.tier), ["task", "task"]);
+  assert.match(renderReport("B", storyReport, { now }), /0 of 2 work items done across 1 story\./);
   assert.match(md, /\| EPIC 1\. Auth \| █████░░░░░ 50% \| 2 \/ 4 \|/);
   assert.match(md, /\| EPIC 2\. Reports \| ██████████ 100% \| 2 \/ 2 \|/);
   assert.match(md, /## Ready for sign-off\n- \*\*1\.1\. Login\*\*: every work item done, 2 acceptance criteria\n- \*\*2\.2\. Export\*\*/);
@@ -1453,7 +1468,8 @@ assert.equal(sawSignal.aborted, false);
     const bodies = {
       "/1/boards/BX": { name: "Acme delivery" },
       "/1/boards/BX/lists": Object.entries(listNames).map(([id, name]) => ({ id, name })),
-      "/1/boards/BX/cards": mockCards,
+      // Like Trello's default "visible" filter: archived cards are not returned.
+      "/1/boards/BX/cards": mockCards.filter((c) => !c.closed),
       "/1/boards/BX/checklists": checklists,
     };
     return u.pathname in bodies
@@ -1476,7 +1492,7 @@ assert.equal(sawSignal.aborted, false);
   assert.match(rep.data.report, /1 duplicate and 1 orphaned card numbers.*auditCardHierarchy/);
   // Four reads, all GET, descriptions requested for the criteria count.
   assert.deepEqual(sent.map((r) => r.path).sort(), ["/1/boards/BX", "/1/boards/BX/cards", "/1/boards/BX/checklists", "/1/boards/BX/lists"]);
-  assert.match(sent.find((r) => r.path.endsWith("/cards")).params.fields, /desc.*labels/);
+  assert.match(sent.find((r) => r.path.endsWith("/cards")).params.fields, /\bdesc\b/);
   // Archived lists are read too, and checklist items come with their ticked state.
   assert.equal(sent.find((r) => r.path.endsWith("/lists")).params.filter, "all");
   assert.match(sent.find((r) => r.path.endsWith("/checklists")).params.checkItem_fields, /state/);
@@ -1490,7 +1506,7 @@ assert.equal(sawSignal.aborted, false);
 
   const scoped = await call("getStatusReport", { epic: "2", format: "json" });
   assert.deepEqual(scoped.data.progress, { done: 2, total: 2, percent: 100 });
-  assert.deepEqual(scoped.data.epics.map((e) => e.number), ["2"]);
+  assert.deepEqual(scoped.data.items.map((e) => e.number), ["2"]);
 
   // doneLists renames the Done list; with a name nothing matches, nothing is finished.
   const noneDone = await call("getStatusReport", { doneLists: ["Live"], format: "json" });
@@ -1510,6 +1526,9 @@ assert.equal(sawSignal.aborted, false);
   const outlineMap = await call("getBoardMap");
   assert.equal(outlineMap.data.format, "outline");
   assert.match(outlineMap.data.map, /^EPIC 1\. Auth {2}█████░░░░░ 50% \(2\/4\)\n/);
+  // The map needs no criteria, so it reads neither descriptions nor checklists.
+  assert.deepEqual(sent.map((r) => r.path).sort(), ["/1/boards/BX", "/1/boards/BX/cards", "/1/boards/BX/lists"]);
+  assert.doesNotMatch(sent.find((r) => r.path.endsWith("/cards")).params.fields, /desc/);
   const flow = await call("getBoardMap", { format: "mermaid", epic: "1", depth: 2 });
   assert.match(flow.data.map, /^flowchart TD/);
   assert.match(flow.data.map, /n1_1\[/);

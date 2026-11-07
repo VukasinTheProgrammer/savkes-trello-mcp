@@ -20,7 +20,9 @@ const SHOWN = 10;
 // ticked complete. The default pattern covers the usual names; a board that calls the
 // list something else passes its own names instead (see doneListTest).
 const DONE_LIST = /^(done|completed?|shipped|released|closed|finished)\b/i;
-const BLOCKED_LABEL = /block/i;
+// Anchored at the start so "Unblocked" and "Blockchain" don't count, while "Blocked",
+// "Blocker", "Blocking" and "blocked: waiting on API" do.
+const BLOCKED_LABEL = /^block(?:ed|er|ing)?\b/i;
 // A list named Blocked is the other common way to park a card, so it counts too.
 const BLOCKED_LIST = /^blocked\b/i;
 
@@ -170,6 +172,14 @@ const walk = (nodes, fn) => {
 };
 const complete = (node) => node.done === node.total;
 const depthOf = (node) => node.number.split(".").length;
+// What a card is, by depth. Used so a report scoped to a story calls it a story.
+const TIERS = [
+  ["epic", "epics"],
+  ["story", "stories"],
+  ["task", "tasks"],
+];
+const tierOf = (node) => (TIERS[depthOf(node) - 1] ?? ["item", "items"])[0];
+const plural = (tier, n) => (n === 1 ? tier : (TIERS.find(([one]) => one === tier)?.[1] ?? `${tier}s`));
 const cap = (items) => ({ count: items.length, items: items.slice(0, SHOWN) });
 
 // Everything the report and the JSON output say, as data.
@@ -183,6 +193,12 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
   const noCriteria = [];
   const unmetCriteria = [];
   const readyForSignOff = [];
+  // A card whose parent number is not on the board is still counted in the totals, but
+  // it is not an epic, so it is listed on its own instead of in the progress table.
+  const missingParent = roots
+    .filter((r) => r.orphan)
+    .map((r) => ({ number: r.number, name: r.name, expectedParent: parentNumber(r.number) }));
+  const placed = roots.filter((r) => !r.orphan);
 
   for (const root of roots) {
     done += root.done;
@@ -224,19 +240,23 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
 
   return {
     progress: { done, total, percent: total === 0 ? 0 : done === total ? 100 : Math.floor((100 * done) / total) },
-    epics: roots.map((root) => ({
+    // The top of the scope: epics for the whole board, or the one story or task that
+    // `epic` narrowed it to. Each entry says which tier it is.
+    items: placed.map((root) => ({
       number: root.number,
       name: root.name,
+      tier: tierOf(root),
       percent: root.percent,
       done: root.done,
       total: root.total,
-      stories: root.children.map((s) => ({
-        number: s.number,
-        name: s.name,
-        percent: s.percent,
-        done: s.done,
-        total: s.total,
-        criteria: s.criteria,
+      children: root.children.map((c) => ({
+        number: c.number,
+        name: c.name,
+        tier: tierOf(c),
+        percent: c.percent,
+        done: c.done,
+        total: c.total,
+        criteria: c.criteria,
       })),
     })),
     readyForSignOff: cap(readyForSignOff),
@@ -246,6 +266,7 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
       stale: { ...cap(stale), afterDays: staleDays },
       storiesWithoutCriteria: cap(noCriteria),
       storiesWithUnmetCriteria: cap(unmetCriteria),
+      missingParent: cap(missingParent),
     },
     openByList,
   };
@@ -260,17 +281,19 @@ const more = (group) => (group.count > group.items.length ? ` (+${group.count - 
 
 // The report a person would send a client: no ids, no JSON, plain sentences.
 export function renderReport(boardName, report, { now = Date.now() } = {}) {
-  const { progress, epics, readyForSignOff, attention, openByList } = report;
+  const { progress, items, readyForSignOff, attention, openByList } = report;
   const out = [`# Delivery status: ${boardName}`, `_${new Date(now).toISOString().slice(0, 10)}_`, ""];
 
-  const epicWord = epics.length === 1 ? "epic" : "epics";
+  const tier = items[0]?.tier ?? "epic";
+  const orphans = attention.missingParent.count;
+  const plusOrphans = orphans ? `, plus ${orphans} ${orphans === 1 ? "card" : "cards"} whose parent is missing` : "";
   out.push(
-    `**${progress.percent}% complete.** ${progress.done} of ${progress.total} work items done across ${epics.length} ${epicWord}.`,
+    `**${progress.percent}% complete.** ${progress.done} of ${progress.total} work items done across ${items.length} ${plural(tier, items.length)}${plusOrphans}.`,
     "",
     "## Progress",
     "| | Progress | Done |",
     "|---|---|---|",
-    ...epics.map((e) => `| ${cell(e.name)} | ${bar(e.percent)} ${e.percent}% | ${e.done} / ${e.total} |`),
+    ...items.map((e) => `| ${cell(e.name)} | ${bar(e.percent)} ${e.percent}% | ${e.done} / ${e.total} |`),
     "",
   );
 
@@ -295,6 +318,7 @@ export function renderReport(boardName, report, { now = Date.now() } = {}) {
   add(`No activity for ${attention.stale.afterDays}+ days`, attention.stale, (c) => `${c.name} [${c.list}], idle ${c.daysIdle} days`);
   add("Stories without acceptance criteria", attention.storiesWithoutCriteria, (c) => c.name);
   add("Done but acceptance criteria not ticked", attention.storiesWithUnmetCriteria, (c) => `${c.name}, ${c.open} open`);
+  add("Parent card missing", attention.missingParent, (c) => `${c.name} (no ${c.expectedParent})`);
   out.push("## Needs attention", ...(lines.length ? lines : ["Nothing needs attention."]), "");
 
   const where = Object.entries(openByList).sort((a, b) => b[1] - a[1]);
