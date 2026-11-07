@@ -213,9 +213,15 @@ export const TOOLS = {
           items: { type: "string" },
           description: "Exact names of the lists that hold finished work, e.g. [\"Shipped\"]. Default: Done, Completed, Shipped, Released, Closed",
         },
+        exemptLabels: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            'Label names for work that never has a pull request, e.g. ["Design", "Docs"]. A Done card with one of them is not listed under "Done without a pull request"; a ticked Definition of Done or a deployed comment still counts as its evidence. Default: none',
+        },
       },
     },
-    async run({ boardId, epic, format = "markdown", doneLists } = {}) {
+    async run({ boardId, epic, format = "markdown", doneLists, exemptLabels = [] } = {}) {
       oneOf("format", format, ["markdown", "json"]);
       const board = resolveBoard(boardId);
       // Comments come from their own paged request; everything else is the same four reads
@@ -228,7 +234,7 @@ export const TOOLS = {
         loadComments(board),
       ]);
       const facts = indexFacts(cards, checklistsByCard, comments.byCard);
-      const audit = buildOutcomeAudit(scopeTo(tree, epic), facts);
+      const audit = buildOutcomeAudit(scopeTo(tree, epic), facts, { exemptLabels });
       const warnings = { ...boardWarnings(tree, cardCount), commentsPossiblyTruncated: comments.truncated };
       if (format === "json") return { boardId: board, board: name, format, ...audit, warnings };
       const notes = boardNotes(warnings, cardCount);

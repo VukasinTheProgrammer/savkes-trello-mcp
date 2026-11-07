@@ -1604,6 +1604,12 @@ assert.equal(sawSignal.aborted, false);
     "Deployed when the tests passed.",
     // "needed" in a past-tense note does not defer anything.
     "Deployed; no further changes needed.",
+    // Other ways a team says the same thing.
+    "Released to customers on Friday.",
+    "Shipped in v2.4.",
+    "Rolled out to all users.",
+    "The feature went live this morning.",
+    "Live in production since 9am.",
   ]) assert.equal(isDeployedComment(yes), true, yes);
   for (const no of [
     "Not deployed yet, waiting for the release window.",
@@ -1618,6 +1624,12 @@ assert.equal(sawSignal.aborted, false);
     "Deployed when the release window opens.",
     "Gets deployed once the window opens.",
     "Deployed, then rolled back.",
+    // The new wordings are held to the same standard as "deployed".
+    "Not released yet.",
+    "Will be shipped next sprint.",
+    "Is it live in production?",
+    "Release is still unreleased.",
+    "Shipped, then reverted.",
     "",
     undefined,
   ]) assert.equal(isDeployedComment(no), false, String(no));
@@ -1882,11 +1894,43 @@ assert.equal(sawSignal.aborted, false);
   assert.ok(escaped.data.report.includes("1.3.2. \\*Bio\\* \\[draft\\]"), escaped.data.report);
   mockCards = fixtureCards();
 
+  // Work that never has a pull request: a Done card with an exempt label is not listed for the
+  // missing one (label match ignores case), the rule says so, and nothing else about it changes.
+  const design = (c) => (c.id === "t131" ? { ...c, labels: [{ name: "Design" }] } : c);
+  mockCards = fixtureCards().map(design);
+  const plain = await call({ format: "json" });
+  assert.equal(plain.data.ruleBreaks.doneWithoutPullRequest.count, 5, "no exemption by default");
+  assert.deepEqual(plain.data.exemptLabels, []);
+  const exempt = await call({ format: "json", exemptLabels: [" design "] });
+  assert.equal(exempt.data.ruleBreaks.doneWithoutPullRequest.count, 4);
+  assert.equal(exempt.data.ruleBreaks.doneWithoutPullRequest.items.some((c) => c.number === "1.3.1"), false);
+  assert.deepEqual(exempt.data.exemptLabels, ["design"]);
+  assert.deepEqual(exempt.data.provenDone, plain.data.provenDone, "evidence is not changed by an exemption");
+  assert.deepEqual(exempt.data.unprovenSignOff, plain.data.unprovenSignOff);
+  const exemptMd = await call({ exemptLabels: ["Design", "Docs"] });
+  assert.match(exemptMd.data.report, /Done without a pull request \(4\)/);
+  assert.match(exemptMd.data.report, /- Cards labelled design, docs are not asked for a pull request\./);
+  assert.equal((await call()).data.report.includes("are not asked for a pull request"), false);
+  mockCards = fixtureCards();
+
+  // A card that is Done and Blocked at once is named, not silently resolved: the numbers still
+  // follow the status report's rule, and the report says one of the two is out of date.
+  mockCards = fixtureCards().map((c) => (c.id === "t131" ? { ...c, labels: blocked } : c));
+  const both = await call({ format: "json" });
+  assert.deepEqual(both.data.inconsistent.doneAndBlocked, { count: 1, items: [{ number: "1.3.1", name: "1.3.1. Avatar" }] });
+  assert.equal(both.data.progress.done, 7, "still counted as Done, like the status report");
+  assert.match((await call()).data.report, /## Cards that say two things\n- \*\*Counted as Done but also Blocked \(1\):\*\* 1\.3\.1\. Avatar\./);
+  mockCards = fixtureCards();
+  assert.deepEqual((await call({ format: "json" })).data.inconsistent.doneAndBlocked, { count: 0, items: [] });
+  assert.equal((await call()).data.report.includes("Cards that say two things"), false);
+
   // Arguments are checked before any request goes out.
   for (const [args, pattern] of [
     [{ epic: "9" }, /No card numbered "9" on this board\. Top-level numbers: 1, 2\./],
     [{ format: "pdf" }, /format must be one of "markdown", "json", got "pdf"/],
     [{ doneLists: "Done" }, /doneLists for getOutcomeAudit must be array, got string/],
+    [{ exemptLabels: "Design" }, /exemptLabels for getOutcomeAudit must be array, got string/],
+    [{ exemptLabels: ["Design", 7] }, /exemptLabels for getOutcomeAudit must be an array of string, but index 1 is number/],
     [{ staleDays: 7 }, /Unknown argument for getOutcomeAudit: staleDays/],
   ]) {
     const bad = await call(args);

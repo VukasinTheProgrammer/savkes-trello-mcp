@@ -23,7 +23,7 @@ export const TEAM_RULE = Object.freeze([
 // What counts as evidence on a card. Any one of the three is enough.
 export const EVIDENCE = Object.freeze([
   Object.freeze({ id: "pull-request", text: "a pull-request or merge-request link attached to the card" }),
-  Object.freeze({ id: "deployed-comment", text: 'a comment saying it was deployed (not "not deployed", "will be deployed" or a question)' }),
+  Object.freeze({ id: "deployed-comment", text: 'a comment saying it was deployed, released or shipped (not "not deployed", "will be deployed" or a question)' }),
   Object.freeze({ id: "definition-of-done", text: "a Definition of Done checklist with every item ticked" }),
 ]);
 
@@ -49,7 +49,7 @@ export function hasPullRequest(attachments) {
 // about it is not proof, so any of these in the same sentence reads as no. That is
 // deliberately strict: a missed proof shows up in the audit and gets fixed in a minute,
 // while a false proof is the exact thing this tool exists to catch.
-const DEPLOYED = /\bdeployed\b/i;
+const DEPLOYED = /\b(?:deployed|released|shipped|rolled out|went live|is live|live in prod(?:uction)?)\b/i;
 const NOT_PROVEN =
   /\b(?:not|never|yet|will|cannot|to be|going to|until|if|waiting|awaiting|pending|needs?|should|must)\b|n't\b/i;
 // "once" and "when" defer a deploy ("deployed when the window opens") unless what follows
@@ -57,7 +57,7 @@ const NOT_PROVEN =
 // words of them reads as done.
 const DEFERRED = /\b(?:once|when)\b(?!(?:\s+\S+){0,3}?\s+\w+ed\b)/i;
 // A later comment saying the deploy was undone takes the proof back.
-const UNDONE = /\b(?:rolled[ -]?back|roll(?:ed)?back|reverted|undeployed)\b/i;
+const UNDONE = /\b(?:rolled[ -]?back|roll(?:ed)?back|reverted|undeployed|unreleased|pulled the release)\b/i;
 
 // A full stop after these is not the end of a sentence ("Acme Inc. replied").
 const ABBREVIATION = /\b(?:inc|ltd|llc|co|corp|dr|mr|mrs|ms|st|vs|etc|jr|sr|approx|e\.g|i\.e)\.$/i;
@@ -121,6 +121,8 @@ export function readCardFacts(card, checklists = [], comments = []) {
     definitionOfDone: hasTickedDod(checklists),
     members: (card.idMembers ?? []).length,
     newestComment: newest?.text ?? null,
+    // Label names only ever leave this file as a yes/no ("is exempt"), never as text.
+    labels: (card.labels ?? []).map((l) => String(l?.name ?? "").trim().toLowerCase()).filter(Boolean),
   };
 }
 
@@ -140,9 +142,13 @@ const hasEvidence = (f) => Boolean(f && (f.pullRequest || f.deployedComment || f
 
 // --- The audit ----------------------------------------------------------------
 
-// `roots` as scopeTo returns them; `facts` as indexFacts returns them.
-export function buildOutcomeAudit(roots, facts) {
+// `roots` as scopeTo returns them; `facts` as indexFacts returns them. `exemptLabels` names
+// the kinds of work that never have a pull request (design, docs, meetings): a Done card
+// carrying one is not listed for the missing pull request. Its other evidence still counts.
+export function buildOutcomeAudit(roots, facts, { exemptLabels = [] } = {}) {
   const factsOf = (node) => facts.get(node.number);
+  const exempt = new Set(exemptLabels.map((l) => String(l).trim().toLowerCase()).filter(Boolean));
+  const isExempt = (f) => Boolean(f?.labels?.some((l) => exempt.has(l)));
 
   // A work item is proven when it is in Done AND shows evidence. Parents add up the same
   // way the done count does, so proven can never exceed done.
@@ -171,6 +177,7 @@ export function buildOutcomeAudit(roots, facts) {
   const openCriteria = [];
   const blockedIncomplete = [];
   const unprovenSignOff = [];
+  const blockedButDone = [];
 
   walk(roots, (node) => {
     const isLeaf = node.children.length === 0;
@@ -184,7 +191,10 @@ export function buildOutcomeAudit(roots, facts) {
     // A card counts as Done here when it is a finished work item, or a story whose work
     // items are all finished: criteria are written on stories, so that is where they get ticked.
     const finished = isLeaf ? node.isDone : depthOf(node) === 2 && node.done === node.total;
-    if (isLeaf && node.isDone && !f?.pullRequest) noPullRequest.push({ number: node.number, name: node.name });
+    if (isLeaf && node.isDone && !f?.pullRequest && !isExempt(f)) noPullRequest.push({ number: node.number, name: node.name });
+    // Done by its ticked due date (or Done list) and Blocked at the same time: one of the two
+    // is out of date. Said out loud, not resolved, because the status report counts it as Done.
+    if (isLeaf && node.isDone && node.blocked) blockedButDone.push({ number: node.number, name: node.name });
     if (finished && node.criteriaOpen > 0) {
       openCriteria.push({ number: node.number, name: node.name, open: node.criteriaOpen });
     }
@@ -222,6 +232,8 @@ export function buildOutcomeAudit(roots, facts) {
       doneWithOpenCriteria: cap(openCriteria),
       blockedIncomplete: cap(blockedIncomplete),
     },
+    inconsistent: { doneAndBlocked: cap(blockedButDone) },
+    exemptLabels: [...exempt],
     rule: TEAM_RULE,
     evidence: EVIDENCE,
   };
@@ -230,7 +242,7 @@ export function buildOutcomeAudit(roots, facts) {
 // --- The write-up -------------------------------------------------------------
 
 export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) {
-  const { progress, provenDone, items, unprovenSignOff, ruleBreaks, rule, evidence } = audit;
+  const { progress, provenDone, items, unprovenSignOff, ruleBreaks, inconsistent, exemptLabels, rule, evidence } = audit;
   const out = [`# Outcome audit: ${boardName}`, `_${new Date(now).toISOString().slice(0, 10)}_`, ""];
 
   const sit = progress.total === 1 ? "item sits" : "items sit";
@@ -272,9 +284,21 @@ export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) 
   add("Blocked without exactly one member and one sentence", ruleBreaks.blockedIncomplete, (c) => `${mdText(c.name)} (${c.problems.join(", ")})`);
   out.push("## Where the team rule is not met", ...(lines.length ? lines : ["Every card follows the rule."]), "");
 
+  // Not a rule break: the board contradicts itself, and the numbers above follow the status report.
+  if (inconsistent.doneAndBlocked.count) {
+    out.push(
+      "## Cards that say two things",
+      `- **Counted as Done but also Blocked (${inconsistent.doneAndBlocked.count}):** ${inconsistent.doneAndBlocked.items
+        .map((c) => mdText(c.name))
+        .join("; ")}${more(inconsistent.doneAndBlocked)}. Their due date is ticked complete or they sit in a Done list; one of the two is out of date.`,
+      "",
+    );
+  }
+
   out.push(
     "## The rule",
     ...rule.map((r) => `- ${r.text}`),
+    ...(exemptLabels.length ? [`- Cards labelled ${exemptLabels.map(mdText).join(", ")} are not asked for a pull request.`] : []),
     "",
     "## What counts as evidence",
     ...evidence.map((e) => `- ${e.text}`),
