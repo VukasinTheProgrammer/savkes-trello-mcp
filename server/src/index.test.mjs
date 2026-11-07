@@ -312,9 +312,16 @@ try {
   assert.match(refused.content[0].text, /addCard is disabled: TRELLO_READONLY/);
   const typo = await handle({ id: 92, method: "tools/call", params: { name: "doesNotExist" } });
   assert.match(typo.content[0].text, /Unknown tool/);
+  // Object.prototype members are not tools, read-only or not.
+  const proto = await handle({ id: 93, method: "tools/call", params: { name: "toString" } });
+  assert.match(proto.content[0].text, /Unknown tool: toString/);
 } finally {
   delete process.env.TRELLO_READONLY;
 }
+
+const protoCall = await handle({ id: 3, method: "tools/call", params: { name: "constructor" } });
+assert.equal(protoCall.isError, true);
+assert.match(protoCall.content[0].text, /Unknown tool: constructor/);
 
 const unknown = await handle({ id: 2, method: "tools/call", params: { name: "doesNotExist" } });
 assert.equal(unknown.isError, true);

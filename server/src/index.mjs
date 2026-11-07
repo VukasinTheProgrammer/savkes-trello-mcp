@@ -185,10 +185,13 @@ export async function handle(msg) {
   }
 
   if (method === "tools/call") {
-    const tool = activeTools()[params.name];
+    // Own keys only: a plain-object lookup would hand back Object.prototype members for
+    // names like "toString" or "constructor".
+    const active = activeTools();
+    const tool = Object.hasOwn(active, params.name) ? active[params.name] : undefined;
     try {
       // Say why, not "Unknown tool": a hidden writer is a policy, not a typo.
-      if (!tool && TOOLS[params.name]) {
+      if (!tool && Object.hasOwn(TOOLS, params.name)) {
         throw new Error(`${params.name} is disabled: TRELLO_READONLY is set, so only read tools are available`);
       }
       if (!tool) throw new Error(`Unknown tool: ${params.name}`);
