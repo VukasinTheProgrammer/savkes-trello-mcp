@@ -101,12 +101,22 @@ const audit = auditHierarchy([
       { id: "a-s03-t4", url: "https://trello.com/c/t4" },
     ],
   },
-  { shortLink: "t1", name: "0.3.1. Attached right", attachments: [] },
+  {
+    shortLink: "t1",
+    name: "0.3.1. Attached right",
+    attachments: [{ id: "a-t1-s03", url: "https://trello.com/c/s03" }],
+  },
   { shortLink: "t2", name: "0.3.2. Missing parent link", attachments: [] },
   { shortLink: "t3", name: "0.3.3. Wrong parent", attachments: [] },
   { shortLink: "t4", name: "0.3.4. Right parent plus an extra one", attachments: [] },
   { shortLink: "x9", name: "9.9.9. Parent absent", attachments: [] },
-  { shortLink: "sep", name: "---", attachments: [] },
+  {
+    // A legend card linking to a task, and a task linking back to its own story, are
+    // cross-references: neither makes 0.3.1 an extra-parent case.
+    shortLink: "sep",
+    name: "---",
+    attachments: [{ id: "a-sep-t1", url: "https://trello.com/c/t1" }],
+  },
 ]);
 assert.equal(audit.ok, 2); // 0.3 under EPIC 0, and 0.3.1 under 0.3
 assert.deepEqual(

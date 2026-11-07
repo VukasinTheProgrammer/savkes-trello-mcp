@@ -89,6 +89,7 @@ export function auditHierarchy(cards) {
     byNumber.get(n).push(card);
   }
 
+  const numberOf = new Map(cards.map((c) => [c.shortLink, cardNumber(c.name)]));
   const label = (short) => {
     const card = cards.find((c) => c.shortLink === short);
     return card ? (cardNumber(card.name) ?? short) : short;
@@ -130,7 +131,13 @@ export function auditHierarchy(cards) {
     }
 
     const allowed = new Set(parents.map((p) => p.shortLink));
-    const actual = entryFor.get(card.shortLink)?.attachedTo ?? [];
+    // Only numbered cards outside this card's own subtree can be a parent. A link from an
+    // unnumbered card (a legend, a notes card) or a back-link from a descendant is a
+    // cross-reference, not hierarchy, so it is neither drift nor something to detach.
+    const actual = (entryFor.get(card.shortLink)?.attachedTo ?? []).filter((s) => {
+      const holder = numberOf.get(s);
+      return holder != null && !holder.startsWith(`${n}.`);
+    });
     const extra = actual.filter((s) => !allowed.has(s));
     if (actual.length > extra.length) {
       // The right parent is linked. Any other card linking to it is still drift:
@@ -383,6 +390,8 @@ export const TOOLS = {
       "numbers: '1' is an epic, '1.1' a story under it, '1.1.2' a task under that, so a " +
       "card's parent is its number minus the last segment. Read-only — reports drift, " +
       "changes nothing. ok counts only cards linked to the right parent and nothing else. " +
+      "Links from unnumbered cards (a legend, notes) and from a card's own descendants are " +
+      "cross-references, not hierarchy, and are ignored. " +
       "Returns { boardId, ok, missing, wrongParent, extraParents, " +
       "parentNotFound, duplicateNumbers, selfLinks, unnumbered }, where missing/wrongParent " +
       "entries carry the shortLinks needed to fix them via attachCard/detachCard. " +
