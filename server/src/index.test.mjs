@@ -25,6 +25,7 @@ import {
   buildTree,
   compareNumbers,
   countCriteria,
+  countOpenCriteria,
   doneListTest,
   renderMermaid,
   renderOutline,
@@ -1335,6 +1336,53 @@ assert.equal(sawSignal.aborted, false);
     2,
   );
   assert.equal(countCriteria("", [{ name: "acceptance criteria", checkItems: [{}, {}, {}] }, { name: "Todo", checkItems: [{}] }]), 3);
+  // Lower-case Given/when/then, as people actually type it, counts too.
+  assert.equal(countCriteria("- Given I click Sign out, when the page reloads, then I am on the sign-in page."), 1);
+  // Only items explicitly not ticked are open; a missing state never blocks anything.
+  assert.equal(
+    countOpenCriteria([
+      { name: "Acceptance Criteria", checkItems: [{ state: "complete" }, { state: "incomplete" }, {}] },
+      { name: "Todo", checkItems: [{ state: "incomplete" }] },
+    ]),
+    1,
+  );
+  // A card in a list named Blocked is blocked even without the label.
+  const parked = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L9" },
+      { id: "b", name: "1.1. Y", idList: "L9", desc: "Given a, when b, then c." },
+      { id: "c", name: "1.1.1. Z", idList: "L9" },
+    ],
+    lists: { L9: "Blocked" },
+  });
+  assert.equal(parked.nodes.get("1.1.1").blocked, true);
+  assert.deepEqual(buildReport(parked.roots, { now }).attention.blocked.items.map((c) => c.number), ["1.1.1"]);
+  // Blocked and overdue list the work item once, not once per level.
+  const stacked = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L1", labels: [{ name: "Blocked" }], due: new Date(now - DAY).toISOString() },
+      { id: "b", name: "1.1. Y", idList: "L1", labels: [{ name: "Blocked" }], due: new Date(now - DAY).toISOString() },
+      { id: "c", name: "1.1.1. Z", idList: "L1", labels: [{ name: "Blocked" }], due: new Date(now - DAY).toISOString() },
+    ],
+    lists: listNames,
+  });
+  const stackedReport = buildReport(stacked.roots, { now });
+  assert.deepEqual(stackedReport.attention.blocked.items.map((c) => c.number), ["1.1.1"]);
+  assert.deepEqual(stackedReport.attention.overdue.items.map((c) => c.number), ["1.1.1"]);
+  // A story whose work is done but whose criteria are not ticked is not ready for sign-off.
+  const unticked = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L1" },
+      { id: "b", name: "1.1. Y", idList: "L1" },
+      { id: "c", name: "1.1.1. Z", idList: "L3" },
+    ],
+    lists: listNames,
+    checklists: { b: [{ name: "Acceptance Criteria", checkItems: [{ state: "complete" }, { state: "incomplete" }] }] },
+  });
+  const untickedReport = buildReport(unticked.roots, { now });
+  assert.equal(untickedReport.readyForSignOff.count, 0);
+  assert.deepEqual(untickedReport.attention.storiesWithUnmetCriteria.items, [{ number: "1.1", name: "1.1. Y", open: 1 }]);
+  assert.match(renderReport("B", untickedReport, { now }), /Done but acceptance criteria not ticked \(1\):\*\* 1\.1\. Y, 1 open/);
 
   // The data behind the report.
   const report = buildReport(tree.roots, { now, staleDays: 14 });
@@ -1429,12 +1477,15 @@ assert.equal(sawSignal.aborted, false);
   // Four reads, all GET, descriptions requested for the criteria count.
   assert.deepEqual(sent.map((r) => r.path).sort(), ["/1/boards/BX", "/1/boards/BX/cards", "/1/boards/BX/checklists", "/1/boards/BX/lists"]);
   assert.match(sent.find((r) => r.path.endsWith("/cards")).params.fields, /desc.*labels/);
+  // Archived lists are read too, and checklist items come with their ticked state.
+  assert.equal(sent.find((r) => r.path.endsWith("/lists")).params.filter, "all");
+  assert.match(sent.find((r) => r.path.endsWith("/checklists")).params.checkItem_fields, /state/);
   // None of the description text comes back to the caller.
   assert.doesNotMatch(rep.text, /they land home/);
 
   const json = await call("getStatusReport", { format: "json" });
   assert.deepEqual(json.data.progress, { done: 4, total: 7, percent: 57 });
-  assert.deepEqual(json.data.warnings, { duplicateNumbers: 1, orphans: 1 });
+  assert.deepEqual(json.data.warnings, { duplicateNumbers: 1, orphans: 1, possiblyTruncated: false });
   assert.equal(json.data.report, undefined);
 
   const scoped = await call("getStatusReport", { epic: "2", format: "json" });

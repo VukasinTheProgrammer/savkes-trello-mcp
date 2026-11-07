@@ -21,6 +21,8 @@ const SHOWN = 10;
 // list something else passes its own names instead (see doneListTest).
 const DONE_LIST = /^(done|completed?|shipped|released|closed|finished)\b/i;
 const BLOCKED_LABEL = /block/i;
+// A list named Blocked is the other common way to park a card, so it counts too.
+const BLOCKED_LIST = /^blocked\b/i;
 
 export function doneListTest(names) {
   if (Array.isArray(names) && names.length) {
@@ -47,15 +49,24 @@ export function compareNumbers(a, b) {
 // Cards written during the window when the push skill made AC a real checklist keep
 // them there instead, so a checklist named "Acceptance Criteria" counts too. Without
 // that, every older story would read as having none.
-const GIVEN_START = /^[ \t]*(?:[-*][ \t]+)?\**Given\b/;
+const GIVEN_START = /^[ \t]*(?:[-*][ \t]+)?\**Given\b/i;
 export function countCriteria(desc, checklists = []) {
   const inText = String(desc ?? "")
-    .split(/^(?=[ \t]*(?:[-*][ \t]+)?\**Given\b)/m)
-    .filter((chunk) => GIVEN_START.test(chunk) && /\bWhen\b/.test(chunk) && /\bThen\b/.test(chunk)).length;
+    .split(/^(?=[ \t]*(?:[-*][ \t]+)?\**Given\b)/im)
+    .filter((chunk) => GIVEN_START.test(chunk) && /\bWhen\b/i.test(chunk) && /\bThen\b/i.test(chunk)).length;
   const inLists = checklists
     .filter((c) => /acceptance criteria/i.test(c.name ?? ""))
     .reduce((n, c) => n + (c.checkItems?.length ?? 0), 0);
   return inText + inLists;
+}
+
+// Acceptance-criteria checklist items that are explicitly not ticked. Items with no
+// `state` (older data, or a caller that did not ask for it) are not counted as open, so
+// a missing field never blocks a sign-off by itself.
+export function countOpenCriteria(checklists = []) {
+  return checklists
+    .filter((c) => /acceptance criteria/i.test(c.name ?? ""))
+    .reduce((n, c) => n + (c.checkItems ?? []).filter((i) => i.state === "incomplete").length, 0);
 }
 
 // Build the tree from a flat card list.
@@ -90,8 +101,9 @@ export function buildTree({ cards, lists = {}, checklists = {}, isDoneList = don
       isDone: card.dueComplete === true || isDoneList(list),
       due: card.dueComplete === true ? null : (card.due ?? null),
       lastActivity: card.dateLastActivity ?? null,
-      blocked: (card.labels ?? []).some((l) => BLOCKED_LABEL.test(l.name ?? "")),
+      blocked: (card.labels ?? []).some((l) => BLOCKED_LABEL.test(l.name ?? "")) || BLOCKED_LIST.test(list),
       criteria: countCriteria(card.desc, checklists[card.id]),
+      criteriaOpen: countOpenCriteria(checklists[card.id]),
       children: [],
       orphan: false,
     });
@@ -169,6 +181,7 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
   const overdue = [];
   const stale = [];
   const noCriteria = [];
+  const unmetCriteria = [];
   const readyForSignOff = [];
 
   for (const root of roots) {
@@ -181,10 +194,14 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
     const open = !complete(node);
 
     if (isLeaf && open) openByList[node.list] = (openByList[node.list] ?? 0) + 1;
-    if (open && node.blocked) blocked.push({ number: node.number, name: node.name, list: node.list });
+    // Blocked and overdue are about work items. Counting a parent as well would list one
+    // piece of work once per level, so a story and its tasks are not reported together.
+    if (isLeaf && open && node.blocked) blocked.push({ number: node.number, name: node.name, list: node.list });
 
     const due = node.due ? Date.parse(node.due) : NaN;
-    if (open && due < now) {
+    if (isLeaf && open && due < now) {
+      // Rounded up: any time past the due date is at least one day late. Idle time below
+      // rounds down because it counts whole days that have actually passed.
       overdue.push({ number: node.number, name: node.name, due: node.due, daysLate: Math.ceil((now - due) / DAY_MS) });
     }
 
@@ -198,6 +215,7 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
     // Stories are the tier that carries acceptance criteria.
     if (depthOf(node) === 2) {
       if (node.criteria === 0) noCriteria.push({ number: node.number, name: node.name });
+      else if (!open && node.criteriaOpen > 0) unmetCriteria.push({ number: node.number, name: node.name, open: node.criteriaOpen });
       else if (!open) readyForSignOff.push({ number: node.number, name: node.name, criteria: node.criteria });
     }
   });
@@ -227,6 +245,7 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
       overdue: cap(overdue),
       stale: { ...cap(stale), afterDays: staleDays },
       storiesWithoutCriteria: cap(noCriteria),
+      storiesWithUnmetCriteria: cap(unmetCriteria),
     },
     openByList,
   };
@@ -275,6 +294,7 @@ export function renderReport(boardName, report, { now = Date.now() } = {}) {
   add("Overdue", attention.overdue, (c) => `${c.name}, ${c.daysLate} ${c.daysLate === 1 ? "day" : "days"} late`);
   add(`No activity for ${attention.stale.afterDays}+ days`, attention.stale, (c) => `${c.name} [${c.list}], idle ${c.daysIdle} days`);
   add("Stories without acceptance criteria", attention.storiesWithoutCriteria, (c) => c.name);
+  add("Done but acceptance criteria not ticked", attention.storiesWithUnmetCriteria, (c) => `${c.name}, ${c.open} open`);
   out.push("## Needs attention", ...(lines.length ? lines : ["Nothing needs attention."]), "");
 
   const where = Object.entries(openByList).sort((a, b) => b[1] - a[1]);

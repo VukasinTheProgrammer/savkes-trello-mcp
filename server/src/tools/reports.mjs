@@ -13,23 +13,26 @@ import {
   scopeTo,
 } from "../utils/rollup.mjs";
 
+const CARD_READ_LIMIT = 1000;
+
 // Four reads, in parallel. Descriptions come along only because acceptance criteria are
 // counted from them; none of that text reaches the caller, which gets counts.
 async function loadTree(board, doneLists) {
   const [info, lists, cards, checklists] = await Promise.all([
     trello("GET", `/boards/${board}`, { fields: "name" }),
-    trello("GET", `/boards/${board}/lists`, { fields: "name" }),
+    // filter=all: cards in an archived list still need the list's name to be read as done.
+    trello("GET", `/boards/${board}/lists`, { fields: "name", filter: "all" }),
     trello("GET", `/boards/${board}/cards`, {
-      fields: "name,shortLink,idList,due,dueComplete,dateLastActivity,desc,labels",
+      fields: "name,shortLink,idList,due,dueComplete,dateLastActivity,desc,labels,closed",
     }),
-    trello("GET", `/boards/${board}/checklists`, { fields: "name,idCard", checkItem_fields: "name" }),
+    trello("GET", `/boards/${board}/checklists`, { fields: "name,idCard", checkItem_fields: "name,state" }),
   ]);
 
   const checklistsByCard = {};
   for (const list of checklists) (checklistsByCard[list.idCard] ??= []).push(list);
 
   const tree = buildTree({
-    // The endpoint already hides archived cards; the filter is for anything that slips by.
+    // Archived cards come back with closed: true when the endpoint is asked for them.
     cards: cards.filter((c) => !c.closed),
     lists: Object.fromEntries(lists.map((l) => [l.id, l.name])),
     checklists: checklistsByCard,
@@ -42,7 +45,7 @@ async function loadTree(board, doneLists) {
         "findCards to see what the cards are called.",
     );
   }
-  return { name: info.name, tree };
+  return { name: info.name, tree, cardCount: cards.length };
 }
 
 const oneOf = (name, value, allowed) => {
@@ -96,18 +99,25 @@ export const TOOLS = {
       oneOf("format", format, ["markdown", "json"]);
       if (!(staleDays > 0)) throw new Error(`staleDays must be a positive number, got ${staleDays}`);
       const board = resolveBoard(boardId);
-      const { name, tree } = await loadTree(board, doneLists);
+      const { name, tree, cardCount } = await loadTree(board, doneLists);
       const now = Date.now();
       const report = buildReport(scopeTo(tree, epic), { now, staleDays });
       const warnings = {
         duplicateNumbers: tree.duplicates.length,
         orphans: [...tree.nodes.values()].filter((n) => n.orphan).length,
+        // One request reads every card. If Trello returned exactly this many it may have
+        // stopped there, so say so instead of presenting partial numbers as the whole board.
+        possiblyTruncated: cardCount >= CARD_READ_LIMIT,
       };
       if (format === "json") return { boardId: board, board: name, format, ...report, warnings };
-      const note =
-        warnings.duplicateNumbers || warnings.orphans
-          ? `\n\n_Note: ${warnings.duplicateNumbers} duplicate and ${warnings.orphans} orphaned card numbers on the board; run auditCardHierarchy._`
-          : "";
+      const notes = [];
+      if (warnings.duplicateNumbers || warnings.orphans) {
+        notes.push(`${warnings.duplicateNumbers} duplicate and ${warnings.orphans} orphaned card numbers on the board; run auditCardHierarchy.`);
+      }
+      if (warnings.possiblyTruncated) {
+        notes.push(`the board returned ${cardCount} cards, which may be Trello's limit for one request, so this report may be partial.`);
+      }
+      const note = notes.length ? `\n\n${notes.map((n) => `_Note: ${n}_`).join("\n")}` : "";
       return { boardId: board, board: name, format, report: renderReport(name, report, { now }) + note };
     },
   },
