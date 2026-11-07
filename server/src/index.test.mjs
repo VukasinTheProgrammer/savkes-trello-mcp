@@ -694,6 +694,16 @@ const okText = (r) => {
   return r.sent;
 };
 
+// Label and custom-field ids are path-encoded, so "../" can't reach another endpoint.
+assert.equal(
+  okText(await callTool("updateLabel", { labelId: "x/../../cards/abc", name: "N" }))[0].path,
+  "/1/labels/x%2F..%2F..%2Fcards%2Fabc",
+);
+assert.equal(
+  okText(await callTool("setCustomFieldValue", { cardId: "c1", customFieldId: "f/../x", text: "a" }))[0].path,
+  "/1/cards/c1/customField/f%2F..%2Fx/item",
+);
+
 // addCard, canonical spelling.
 assert.deepEqual(
   okText(await callTool("addCard", { listId: "L1", name: "N", description: "D", labels: ["l1", "l2"] }))[0],

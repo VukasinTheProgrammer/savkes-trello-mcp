@@ -7,6 +7,8 @@
 
 import { cardRef, resolveBoard, trello } from "../trello/client.mjs";
 
+// Ids go into the URL path encoded: new URL() resolves "../", so an unencoded id like
+// "x/../../cards/abc" would send the request to a different endpoint.
 const FIELD_TYPES = ["text", "number", "checkbox", "date", "list"];
 
 export const TOOLS = {
@@ -75,7 +77,7 @@ export const TOOLS = {
     },
     run: ({ labelId, name, color }) => {
       if (name === undefined && color === undefined) throw new Error("Pass name, color, or both");
-      return trello("PUT", `/labels/${labelId}`, { name, color });
+      return trello("PUT", `/labels/${encodeURIComponent(labelId)}`, { name, color });
     },
   },
 
@@ -158,7 +160,7 @@ export const TOOLS = {
               : date !== undefined
                 ? { value: { date } }
                 : { value: { checked: String(checked) } };
-      return trello("PUT", `/cards/${cardRef(cardId)}/customField/${customFieldId}/item`, {}, body);
+      return trello("PUT", `/cards/${cardRef(cardId)}/customField/${encodeURIComponent(customFieldId)}/item`, {}, body);
     },
   },
 };
