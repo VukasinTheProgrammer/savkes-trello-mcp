@@ -143,7 +143,7 @@ export function auditHierarchy(cards) {
           shortLink: card.shortLink,
           expectedParent: wanted,
           extraParentNumbers: extra.map(label),
-          detach: extra.map((s) => ({ shortLink: s, attachmentId: attachmentId(s, card.shortLink) })),
+          detach: extra.map((s) => ({ shortLink: s, attachmentId: attachmentId(s, card.shortLink) ?? null })),
         });
       }
     } else if (actual.length === 0) {
@@ -382,11 +382,13 @@ export const TOOLS = {
       "Check the board's real card-to-card links against the hierarchy implied by card " +
       "numbers: '1' is an epic, '1.1' a story under it, '1.1.2' a task under that, so a " +
       "card's parent is its number minus the last segment. Read-only — reports drift, " +
-      "changes nothing. Returns { boardId, ok, missing, wrongParent, extraParents, " +
+      "changes nothing. ok counts only cards linked to the right parent and nothing else. " +
+      "Returns { boardId, ok, missing, wrongParent, extraParents, " +
       "parentNotFound, duplicateNumbers, selfLinks, unnumbered }, where missing/wrongParent " +
       "entries carry the shortLinks needed to fix them via attachCard/detachCard. " +
       "extraParents lists cards linked to the right parent AND to other cards; each entry's " +
-      "detach is [{shortLink, attachmentId}], exactly what detachCard needs to remove the " +
+      "detach is [{shortLink, attachmentId}] (attachmentId is null if the attachment could not " +
+      "be found), exactly what detachCard needs to remove the " +
       "extra links. boardId defaults to TRELLO_BOARD_ID.",
     annotations: { readOnlyHint: true },
     inputSchema: {
