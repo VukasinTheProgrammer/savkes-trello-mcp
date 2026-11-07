@@ -248,11 +248,11 @@ export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) 
   const sit = progress.total === 1 ? "item sits" : "items sit";
   const shows = provenDone.done === 1 ? "shows" : "show";
   out.push(
-    `**${progress.percent}% in Done. ${provenDone.percent}% proven done.** ` +
+    `**${progress.percent}% in Done. ${provenDone.percent}% with evidence.** ` +
       `${progress.done} of ${progress.total} work ${sit} in Done; ${provenDone.done} of them ${shows} evidence.`,
     "",
     "## Progress",
-    "| | In Done | Proven done |",
+    "| | In Done | With evidence |",
     "|---|---|---|",
     ...items.map(
       (i) => `| ${cell(i.name)} | ${bar(i.percent)} ${i.percent}% | ${bar(i.provenPercent)} ${i.provenPercent}% |`,

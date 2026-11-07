@@ -183,7 +183,7 @@ export const TOOLS = {
       "Checks whether work marked Done has evidence behind it, reading only Trello. Works on " +
       "boards that use the numbered hierarchy (EPIC 1 -> 1.1 story -> 1.1.1 task), like " +
       "getStatusReport. It does four things. (1) Next to the usual percent-done it gives a " +
-      "second number, proven done: a work item counts only if it sits in a Done-style list AND " +
+      "second number, done with evidence: a work item counts only if it sits in a Done-style list AND " +
       "its card carries evidence, which is a pull-request link attached, a comment saying it " +
       "was deployed, or a Definition of Done checklist with every item ticked. (2) It lists " +
       "stories that look ready for sign-off because every work item under them is Done, but " +

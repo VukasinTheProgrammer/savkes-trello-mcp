@@ -1820,7 +1820,7 @@ assert.equal(sawSignal.aborted, false);
   assert.notEqual(md.isError, true, md.text);
   assert.equal(md.data.format, "markdown");
   assert.match(md.data.report, /^# Outcome audit: Acme delivery/);
-  assert.match(md.data.report, /\*\*70% in Done\. 40% proven done\.\*\*/);
+  assert.match(md.data.report, /\*\*70% in Done\. 40% with evidence\.\*\*/);
   assert.match(md.data.report, /7 of 10 work items sit in Done; 4 of them show evidence\./);
   assert.match(md.data.report, /## Sign-off without evidence\n- \*\*1\.3\. Profile\*\*: all 2 work items are Done, none shows evidence/);
   assert.match(md.data.report, /Done without a pull request \(5\)/);
@@ -1851,7 +1851,7 @@ assert.equal(sawSignal.aborted, false);
   assert.deepEqual(noneDone.data.provenDone, { done: 0, total: 10, percent: 0 });
   assert.equal(noneDone.data.unprovenSignOff.count, 0);
 
-  // Proven done can never exceed done: a card with evidence that is not in Done does not count.
+  // Done with evidence can never exceed done: a card with evidence that is not in Done does not count.
   mockCards = fixtureCards().map((c) => (c.id === "t131" ? { ...c, idList: "L2", attachments: PR } : c));
   const early = await call({ format: "json" });
   assert.deepEqual(early.data.progress, { done: 6, total: 10, percent: 60 });
