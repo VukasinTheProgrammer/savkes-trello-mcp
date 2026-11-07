@@ -10,7 +10,7 @@ import path from "node:path";
 
 import { Bucket, authHeader, buildUrl, cardRef, pool, resolveBoard } from "./trello/client.mjs";
 import { PROMPTS } from "./prompts.mjs";
-import { TOOLS, handle, validateArgs } from "./index.mjs";
+import { TOOLS, activeTools, handle, isReadOnly, validateArgs } from "./index.mjs";
 import { auditHierarchy, buildLinkGraph, pickCardSummary } from "./tools/hierarchy.mjs";
 import {
   belongsUnder,
@@ -280,6 +280,41 @@ assert.equal(
   list.tools.every((t) => t.inputSchema?.type === "object" && t.inputSchema.properties),
   true,
 );
+
+// TRELLO_READONLY: only tools annotated readOnlyHint serve; everything else is hidden
+// and refused with a reason. Unset, empty and a literal "${TRELLO_READONLY}" (what an
+// unset variable can arrive as) all mean off.
+for (const off of [undefined, "", "0", "false", "${TRELLO_READONLY}"]) {
+  assert.equal(isReadOnly({ TRELLO_READONLY: off }), false, `TRELLO_READONLY=${off} must be off`);
+}
+for (const on of ["1", "true", "TRUE", " yes "]) {
+  assert.equal(isReadOnly({ TRELLO_READONLY: on }), true, `TRELLO_READONLY=${on} must be on`);
+}
+assert.equal(activeTools({}), TOOLS);
+const readOnlyNames = Object.keys(activeTools({ TRELLO_READONLY: "1" })).sort();
+assert.equal(readOnlyNames.length > 0 && readOnlyNames.length < Object.keys(TOOLS).length, true);
+assert.equal(
+  readOnlyNames.every((n) => TOOLS[n].annotations?.readOnlyHint === true),
+  true,
+);
+for (const writer of ["addCard", "updateCard", "archiveCard", "detachCard", "repairCardHierarchy", "placeCards"]) {
+  assert.equal(readOnlyNames.includes(writer), false, `${writer} must be hidden in read-only mode`);
+}
+for (const reader of ["getCard", "findCards", "auditCardHierarchy", "nextCardNumbers"]) {
+  assert.equal(readOnlyNames.includes(reader), true, `${reader} must stay available in read-only mode`);
+}
+process.env.TRELLO_READONLY = "1";
+try {
+  const roList = await handle({ id: 90, method: "tools/list" });
+  assert.deepEqual(roList.tools.map((t) => t.name).sort(), readOnlyNames);
+  const refused = await handle({ id: 91, method: "tools/call", params: { name: "addCard", arguments: { listId: "x", name: "y" } } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /addCard is disabled: TRELLO_READONLY/);
+  const typo = await handle({ id: 92, method: "tools/call", params: { name: "doesNotExist" } });
+  assert.match(typo.content[0].text, /Unknown tool/);
+} finally {
+  delete process.env.TRELLO_READONLY;
+}
 
 const unknown = await handle({ id: 2, method: "tools/call", params: { name: "doesNotExist" } });
 assert.equal(unknown.isError, true);

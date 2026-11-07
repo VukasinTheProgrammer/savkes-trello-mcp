@@ -237,6 +237,11 @@ start `claude` from the repo root, and `.mcp.json` does the rest.
 | **Write (destructive)** | `updateCard` `changeCardMembers` `archiveCard` `archiveList` `updateComment` `deleteComment` `updateChecklistItem` `deleteChecklist` `detachCard` |
 | **Hierarchy** | `listBoardCardLinks` `auditCardHierarchy` `nextCardNumbers` `repairCardHierarchy` (with `dryRun`) |
 
+**Read-only mode.** Set `TRELLO_READONLY=1` (or `true`/`yes`) in the server's
+environment and only tools annotated `readOnlyHint: true` are listed or callable.
+Calling a hidden writer returns "is disabled", not "unknown tool". Use it for
+unattended runs such as `board-audit`.
+
 The hierarchy tools show what domain tools look like beyond CRUD. Cards are
 numbered `EPIC 1` → `1.1` (story) → `1.1.2` (task), each card is attached to
 its parent, and the tools check and repair that structure. The rules live in

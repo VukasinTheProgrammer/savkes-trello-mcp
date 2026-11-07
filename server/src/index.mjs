@@ -32,6 +32,20 @@ import { TOOLS as HIERARCHY_TOOLS } from "./tools/hierarchy.mjs";
 // the real one.
 export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS };
 
+// TRELLO_READONLY=1 (or true/yes) serves only tools annotated readOnlyHint: true, for
+// unattended runs and anyone who wants the model unable to write. Deny by default: a
+// tool with no annotation is treated as a writer. An unset variable can arrive as the
+// literal text "${TRELLO_READONLY}" (see .mcp.json), which must read as off, not on.
+// Read per call, not at import, so the selftest can flip it.
+export const isReadOnly = (env = process.env) => {
+  const v = String(env.TRELLO_READONLY ?? "").trim().toLowerCase();
+  return ["1", "true", "yes"].includes(v);
+};
+export const activeTools = (env = process.env) =>
+  isReadOnly(env)
+    ? Object.fromEntries(Object.entries(TOOLS).filter(([, t]) => t.annotations?.readOnlyHint === true))
+    : TOOLS;
+
 // One source for both the handshake and the stderr log prefix, so they can't drift.
 const SERVER = { name: "trello-board", version: "0.4.0" };
 
@@ -126,7 +140,7 @@ export async function handle(msg) {
 
   if (method === "tools/list") {
     return {
-      tools: Object.entries(TOOLS).map(([name, t]) => ({
+      tools: Object.entries(activeTools()).map(([name, t]) => ({
         name,
         description: t.description,
         inputSchema: t.inputSchema,
@@ -169,8 +183,12 @@ export async function handle(msg) {
   }
 
   if (method === "tools/call") {
-    const tool = TOOLS[params.name];
+    const tool = activeTools()[params.name];
     try {
+      // Say why, not "Unknown tool": a hidden writer is a policy, not a typo.
+      if (!tool && TOOLS[params.name]) {
+        throw new Error(`${params.name} is disabled: TRELLO_READONLY is set, so only read tools are available`);
+      }
       if (!tool) throw new Error(`Unknown tool: ${params.name}`);
       const args = params.arguments ?? {};
       validateArgs(params.name, tool.inputSchema, args);
