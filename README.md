@@ -11,7 +11,7 @@ Use it two ways:
   `@modelcontextprotocol/sdk`. Here you can read every byte that crosses the
   wire, from the `initialize` handshake to a tool result, in a single
   270-line file.
-- **As a real Trello integration for Claude Code.** It has 42 tools, 5
+- **As a real Trello integration for Claude Code.** It has 43 tools, 5
   prompts, 3 resources, and a draft → review → push workflow for creating
   numbered epic/story/task cards.
 
@@ -228,7 +228,7 @@ start `claude` from the repo root, and `.mcp.json` does the rest.
 
 ## What's included
 
-### Tools (42)
+### Tools (43)
 
 | Group | Tools |
 |---|---|
@@ -236,7 +236,7 @@ start `claude` from the repo root, and `.mcp.json` does the rest.
 | **Write (additive)** | `addCard` `addList` `addComment` `addChecklist` `addChecklistItem` `moveCard` `unarchiveCard` `attachCard` `placeCards` |
 | **Write (destructive)** | `updateCard` `changeCardMembers` `archiveCard` `archiveList` `updateComment` `deleteComment` `updateChecklistItem` `deleteChecklist` `detachCard` |
 | **Hierarchy** | `listBoardCardLinks` `auditCardHierarchy` `nextCardNumbers` `repairCardHierarchy` (with `dryRun`) |
-| **Reports** | `getStatusReport` (client-ready progress report, rolled up from the card numbers) `getBoardMap` (the tree as an outline or Mermaid chart) |
+| **Reports** | `getStatusReport` (client-ready progress report, rolled up from the card numbers) `getBoardMap` (the tree as an outline or Mermaid chart) `getOutcomeAudit` (how much of "Done" has evidence on the card: a second, proven-done percentage; stories that look ready for sign-off with none; cards that break the team rule) |
 
 The hierarchy tools show what domain tools look like beyond CRUD. Cards are
 numbered `EPIC 1` → `1.1` (story) → `1.1.2` (task), each card is attached to

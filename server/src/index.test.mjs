@@ -21,6 +21,18 @@ import {
   spreadPositions,
 } from "./utils/numbering.mjs";
 import {
+  EVIDENCE,
+  TEAM_RULE,
+  buildOutcomeAudit,
+  hasDeployedProof,
+  hasPullRequest,
+  hasTickedDod,
+  indexFacts,
+  isDeployedComment,
+  isOneSentence,
+  renderOutcomeAudit,
+} from "./utils/outcome.mjs";
+import {
   buildReport,
   buildTree,
   compareNumbers,
@@ -242,11 +254,10 @@ assert.deepEqual(spreadPositions(2000, 1000, 2), [3024, 4048]);
 // tight on its own. Only <= 0 is unusable.
 assert.deepEqual(spreadPositions(1000, 1001, 3), [1000.25, 1000.5, 1000.75]);
 
-// 16 ported from mcp-trello + 9 from the wrapper + 9 added since + 6 label/custom-field
-// tools = 40. A name collision between the halves would silently drop a tool, so the
-// count is asserted alongside the names. This is the only place the total is written down.
+// A name collision between the halves would silently drop a tool, so the count is
+// asserted alongside the names. This is the only place the total is written down.
 const list = await handle({ id: 1, method: "tools/list" });
-assert.equal(list.tools.length, 42);
+assert.equal(list.tools.length, 43);
 assert.deepEqual(
   list.tools.map((t) => t.name).sort(),
   [
@@ -278,6 +289,7 @@ assert.deepEqual(
     "getLists",
     "getMyBoards",
     "getMyCards",
+    "getOutcomeAudit",
     "getRecentActivity",
     "getStatusReport",
     "listBoardCardLinks",
@@ -334,7 +346,7 @@ assert.equal(
 for (const writer of ["addCard", "updateCard", "archiveCard", "detachCard", "repairCardHierarchy", "placeCards"]) {
   assert.equal(readOnlyNames.includes(writer), false, `${writer} must be hidden in read-only mode`);
 }
-for (const reader of ["getCard", "findCards", "auditCardHierarchy", "nextCardNumbers", "getStatusReport", "getBoardMap"]) {
+for (const reader of ["getCard", "findCards", "auditCardHierarchy", "nextCardNumbers", "getStatusReport", "getBoardMap", "getOutcomeAudit"]) {
   assert.equal(readOnlyNames.includes(reader), true, `${reader} must stay available in read-only mode`);
 }
 process.env.TRELLO_READONLY = "1";
@@ -1550,6 +1562,364 @@ assert.equal(sawSignal.aborted, false);
   const empty = await call("getStatusReport");
   assert.equal(empty.isError, true);
   assert.match(empty.text, /No numbered cards on this board \(1 cards, none named like "EPIC 1\./);
+}
+
+// ---------------------------------------------------------------------------
+// Outcome audit: is "Done" backed by something on the card? All data below is invented.
+{
+  // Evidence, part 1: what counts as a pull-request link. Only the URL is read.
+  for (const url of [
+    "https://github.com/acme/web/pull/42",
+    "https://github.com/acme/web/pull/42/files?diff=split#r1",
+    "https://gitlab.com/acme/group/web/-/merge_requests/7",
+    "https://bitbucket.org/acme/web/pull-requests/3",
+    "https://dev.azure.com/acme/proj/_git/web/pullrequest/9",
+    "https://git.example.test/acme/web/pull/12",
+  ]) assert.equal(hasPullRequest([{ url }]), true, url);
+  for (const url of [
+    "https://github.com/acme/web/issues/42",
+    "https://github.com/acme/web/pull/",
+    "https://github.com/acme/web/pulls",
+    "https://github.com/acme/web/commit/abc123",
+    "https://trello.com/c/AbCd1234/12-card",
+    "https://files.example.test/spec.pdf",
+    "ftp://git.example.test/acme/web/pull/12",
+    "not a url",
+    undefined,
+  ]) assert.equal(hasPullRequest([{ url }]), false, String(url));
+  assert.equal(hasPullRequest([]), false);
+  assert.equal(hasPullRequest(undefined), false);
+  assert.equal(hasPullRequest([{ url: "https://files.example.test/a.pdf" }, { url: "https://github.com/acme/web/pull/1" }]), true);
+
+  // Evidence, part 2: a comment that says "deployed". A sentence that denies it, defers
+  // it or asks about it is not proof, so each of those is read as no.
+  for (const yes of [
+    "Deployed to staging.",
+    "deployed",
+    "Merged, then deployed on Friday.",
+    "DEPLOYED to prod",
+    "Fixed the typo. Deployed after lunch.",
+    // "once"/"when" followed by something that already happened is a done deploy.
+    "Deployed to production once QA signed off.",
+    "Deployed when the tests passed.",
+    // "needed" in a past-tense note does not defer anything.
+    "Deployed; no further changes needed.",
+  ]) assert.equal(isDeployedComment(yes), true, yes);
+  for (const no of [
+    "Not deployed yet, waiting for the release window.",
+    "It will be deployed tomorrow.",
+    "Can't be deployed until review is done.",
+    "Ready to be deployed.",
+    "Is it deployed?",
+    "Not deployed. Looks fine.",
+    "Looks good to me.",
+    "undeployed",
+    // "once"/"when" in front of something still to come is a deferral.
+    "Deployed when the release window opens.",
+    "Gets deployed once the window opens.",
+    "Deployed, then rolled back.",
+    "",
+    undefined,
+  ]) assert.equal(isDeployedComment(no), false, String(no));
+
+  // The newest comment about the deploy decides: a rollback after "deployed" takes the
+  // proof back, and a fresh "deployed" after the rollback restores it.
+  const at = (text, day) => ({ text, date: `2026-11-0${day}T10:00:00.000Z` });
+  assert.equal(hasDeployedProof([at("Deployed to production.", 1)]), true);
+  assert.equal(hasDeployedProof([at("Rolled back, it broke checkout.", 2), at("Deployed to production.", 1)]), false);
+  assert.equal(hasDeployedProof([at("Deployed to production.", 1), at("Reverted the release.", 2)]), false, "order of the array does not matter");
+  assert.equal(hasDeployedProof([at("Deployed again with the fix.", 3), at("Rolled back.", 2), at("Deployed.", 1)]), true);
+  assert.equal(hasDeployedProof([at("Looks good.", 2), at("Deployed.", 1)]), true, "an unrelated newer comment changes nothing");
+  assert.equal(hasDeployedProof([]), false);
+  assert.equal(hasDeployedProof(undefined), false);
+
+  // Evidence, part 3: a Definition of Done checklist with every item ticked. Missing
+  // state is not a tick, and every such checklist on the card must be ticked.
+  const dod = (states, name = "Definition of Done") => [{ name, checkItems: states.map((state) => ({ name: "x", state })) }];
+  assert.equal(hasTickedDod(dod(["complete", "complete"])), true);
+  assert.equal(hasTickedDod(dod(["complete"], "DoD")), true);
+  assert.equal(hasTickedDod(dod(["complete"], "Team definition of done")), true);
+  assert.equal(hasTickedDod(dod(["complete", "incomplete"])), false);
+  assert.equal(hasTickedDod(dod([])), false);
+  assert.equal(hasTickedDod(dod(["complete"], "Release notes")), false);
+  assert.equal(hasTickedDod(dod(["complete"], "Methodology")), false);
+  assert.equal(hasTickedDod([{ name: "Definition of Done", checkItems: [{ name: "a" }] }]), false);
+  assert.equal(hasTickedDod([...dod(["complete"]), ...dod(["incomplete"])]), false);
+  assert.equal(hasTickedDod(undefined), false);
+
+  // The "one sentence" half of the Blocked rule.
+  for (const yes of [
+    "Waiting for the vendor API key.",
+    "Waiting for api.example.test to be fixed",
+    "  Blocked on legal review!  ",
+    // A full stop after an abbreviation does not end the sentence.
+    "Waiting on Acme Inc. to sign the contract.",
+    "Needs a decision from Dr. Kaya.",
+    "Waiting on design, e.g. the new icons.",
+  ]) {
+    assert.equal(isOneSentence(yes), true, yes);
+  }
+  for (const no of [
+    "Vendor is down. Retry Monday.",
+    "Waiting on legal.\nWill ask again Friday.",
+    "Waiting on Acme Inc.\nRetry Monday.",
+    "",
+    "   ",
+    undefined,
+  ]) {
+    assert.equal(isOneSentence(no), false, String(no));
+  }
+
+  // The rule is written once, in code, and printed with every audit.
+  assert.deepEqual(TEAM_RULE.map((r) => r.id), ["pull-request", "criteria-ticked", "blocked"]);
+  assert.deepEqual(EVIDENCE.map((e) => e.id), ["pull-request", "deployed-comment", "definition-of-done"]);
+  assert.equal(Object.isFrozen(EVIDENCE), true);
+  assert.equal(Object.isFrozen(TEAM_RULE), true);
+
+  // --- The fixture board ---------------------------------------------------
+  const AC = "- **Given** a user\n  **When** they act\n  **Then** it works";
+  const lists = { L1: "Backlog", L2: "Doing", L3: "Done" };
+  const PR = [{ url: "https://github.com/acme/web/pull/42" }];
+  const blocked = [{ name: "Blocked" }];
+  const fixtureCards = () => [
+    { id: "e1", name: "EPIC 1. Auth", idList: "L1" },
+    { id: "s11", name: "1.1. Login", idList: "L1", desc: AC },
+    { id: "t111", name: "1.1.1. Form", idList: "L3", attachments: PR },
+    { id: "t112", name: "1.1.2. API", idList: "L3", attachments: [] },
+    { id: "s12", name: "1.2. Reset password", idList: "L1", desc: AC },
+    { id: "t121", name: "1.2.1. Email", idList: "L3" },
+    { id: "t122", name: "1.2.2. Page", idList: "L3" },
+    { id: "s13", name: "1.3. Profile", idList: "L1", desc: AC },
+    { id: "t131", name: "1.3.1. Avatar", idList: "L3" },
+    { id: "t132", name: "1.3.2. Bio", idList: "L3" },
+    { id: "e2", name: "EPIC 2. Reports", idList: "L1" },
+    { id: "s21", name: "2.1. Export", idList: "L1", desc: AC },
+    { id: "t211", name: "2.1.1. CSV", idList: "L2", labels: blocked, idMembers: ["m1"] },
+    { id: "t212", name: "2.1.2. PDF", idList: "L2", labels: blocked, idMembers: [] },
+    { id: "t213", name: "2.1.3. XLSX", idList: "L2", labels: blocked, idMembers: ["m1", "m2"] },
+    { id: "s22", name: "2.2. Archive", idList: "L1", desc: AC },
+    { id: "t221", name: "2.2.1. Old reports", idList: "L3", attachments: PR },
+    { id: "sep", name: "---", idList: "L1" },
+  ];
+  const fixtureChecklists = [
+    {
+      id: "k122",
+      idCard: "t122",
+      name: "Definition of Done",
+      checkItems: [{ name: "tests", state: "complete" }, { name: "docs", state: "complete" }],
+    },
+    {
+      id: "k221",
+      idCard: "t221",
+      name: "Acceptance Criteria",
+      checkItems: [{ name: "a", state: "complete" }, { name: "b", state: "incomplete" }],
+    },
+  ];
+  const comment = (id, card, text, date) => ({ id, date, data: { text, ...(card && { card: { id: card } }) } });
+  // Newest first, as Trello returns them. t213 has two comments: only the newest counts.
+  const fixtureComments = [
+    comment("a6", null, "Deployed everywhere.", "2026-11-05T11:00:00.000Z"),
+    comment("a5", "t213", "Vendor is down. Retry Monday.", "2026-11-05T10:00:00.000Z"),
+    comment("a4", "t132", "Not deployed yet, waiting for the release window.", "2026-11-04T10:00:00.000Z"),
+    comment("a3", "t211", "Waiting for the finance team to approve the format.", "2026-11-03T10:00:00.000Z"),
+    comment("a2", "t121", "Looks good to me.", "2026-11-02T10:00:00.000Z"),
+    comment("a1", "t112", "Deployed to staging.", "2026-11-01T10:00:00.000Z"),
+    comment("a0", "t213", "Waiting on the vendor.", "2026-10-31T10:00:00.000Z"),
+  ];
+
+  // Over the real dispatch path with a mocked board, recording every request.
+  let actionPages = () => fixtureComments;
+  let mockCards = fixtureCards();
+  const sent = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    sent.push({ method: opts.method ?? "GET", path: u.pathname, params: Object.fromEntries(u.searchParams) });
+    const bodies = {
+      "/1/boards/BX": () => ({ name: "Acme delivery" }),
+      "/1/boards/BX/lists": () => Object.entries(lists).map(([id, name]) => ({ id, name })),
+      "/1/boards/BX/cards": () => mockCards,
+      "/1/boards/BX/checklists": () => fixtureChecklists,
+      "/1/boards/BX/actions": () => actionPages(Object.fromEntries(u.searchParams)),
+    };
+    return u.pathname in bodies
+      ? new Response(JSON.stringify(bodies[u.pathname]()), { status: 200 })
+      : new Response(`not mocked: ${u.pathname}`, { status: 404, statusText: "Not Found" });
+  };
+  const call = async (args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 9, method: "tools/call", params: { name: "getOutcomeAudit", arguments: { boardId: "BX", ...args } } });
+    return { ...r, data: r.isError ? null : JSON.parse(r.content[0].text), text: r.content[0].text };
+  };
+
+  const audit = await call({ format: "json" });
+  assert.notEqual(audit.isError, true, audit.text);
+  assert.equal(audit.data.board, "Acme delivery");
+  // The percentage everyone already reads, and the one next to it that has to be earned.
+  assert.deepEqual(audit.data.progress, { done: 7, total: 10, percent: 70 });
+  assert.deepEqual(audit.data.provenDone, { done: 4, total: 10, percent: 40 });
+  assert.deepEqual(
+    audit.data.items.map((i) => [i.number, i.done, i.total, i.percent, i.provenDone, i.provenPercent]),
+    [["1", 6, 6, 100, 3, 50], ["2", 1, 4, 25, 1, 25]],
+  );
+  // Evidence of any one kind is enough: a PR (1.1.1), a "deployed" comment (1.1.2), a
+  // ticked Definition of Done (1.2.2). A denial ("Not deployed yet") and a bare "Looks
+  // good" are not. A comment with no card is ignored.
+  // Story 1.3 looks ready for sign-off (every item is Done) and none of its items has
+  // evidence. Story 1.1 has evidence on one of its two items, so it is not listed.
+  assert.deepEqual(audit.data.unprovenSignOff, { count: 1, items: [{ number: "1.3", name: "1.3. Profile", workItems: 2 }] });
+  // The team rule, applied the same way to every card.
+  assert.deepEqual(audit.data.ruleBreaks.doneWithoutPullRequest.items.map((c) => c.number), ["1.1.2", "1.2.1", "1.2.2", "1.3.1", "1.3.2"]);
+  assert.equal(audit.data.ruleBreaks.doneWithoutPullRequest.count, 5);
+  assert.deepEqual(audit.data.ruleBreaks.doneWithOpenCriteria, {
+    count: 1,
+    items: [{ number: "2.2.1", name: "2.2.1. Old reports", open: 1 }],
+  });
+  assert.deepEqual(audit.data.ruleBreaks.blockedIncomplete, {
+    count: 2,
+    items: [
+      { number: "2.1.2", name: "2.1.2. PDF", problems: ["no member", "no reason"] },
+      { number: "2.1.3", name: "2.1.3. XLSX", problems: ["more than one member", "reason is more than one sentence"] },
+    ],
+  });
+  assert.deepEqual(audit.data.rule, TEAM_RULE);
+  assert.deepEqual(audit.data.evidence, EVIDENCE);
+  assert.deepEqual(audit.data.warnings, { duplicateNumbers: 0, orphans: 0, possiblyTruncated: false, commentsPossiblyTruncated: false });
+
+  // Read-only on the wire: only GETs, and the comment/attachment/member fields it needs.
+  assert.equal(sent.every((r) => r.method === "GET"), true, "getOutcomeAudit must only read");
+  assert.deepEqual(
+    [...new Set(sent.map((r) => r.path))].sort(),
+    ["/1/boards/BX", "/1/boards/BX/actions", "/1/boards/BX/cards", "/1/boards/BX/checklists", "/1/boards/BX/lists"],
+  );
+  const cardsReq = sent.find((r) => r.path.endsWith("/cards")).params;
+  assert.equal(cardsReq.attachments, "true");
+  assert.equal(cardsReq.attachment_fields, "url");
+  assert.match(cardsReq.fields, /\bidMembers\b/);
+  assert.equal(sent.find((r) => r.path.endsWith("/actions")).params.filter, "commentCard");
+  assert.equal(sent.find((r) => r.path.endsWith("/checklists")).params.checkItem_fields, "name,state");
+
+  // Nothing a person wrote and nobody's id comes back: counts and card names only.
+  for (const secret of ["finance team", "Vendor is down", "release window", "Deployed to staging", "m1", "m2"]) {
+    assert.equal(audit.text.includes(secret), false, `${secret} leaked into the result`);
+  }
+
+  // The markdown a person would paste.
+  const md = await call();
+  assert.notEqual(md.isError, true, md.text);
+  assert.equal(md.data.format, "markdown");
+  assert.match(md.data.report, /^# Outcome audit: Acme delivery/);
+  assert.match(md.data.report, /\*\*70% in Done\. 40% proven done\.\*\*/);
+  assert.match(md.data.report, /7 of 10 work items sit in Done; 4 of them show evidence\./);
+  assert.match(md.data.report, /## Sign-off without evidence\n- \*\*1\.3\. Profile\*\*: all 2 work items are Done, none shows evidence/);
+  assert.match(md.data.report, /Done without a pull request \(5\)/);
+  assert.match(md.data.report, /Done with acceptance criteria not ticked \(1\):\*\* 2\.2\.1\. Old reports, 1 open/);
+  assert.match(md.data.report, /Blocked without exactly one member and one sentence \(2\):\*\* 2\.1\.2\. PDF \(no member, no reason\)/);
+  assert.match(md.data.report, /## The rule/);
+  for (const r of TEAM_RULE) assert.ok(md.data.report.includes(r.text), `rule line missing: ${r.id}`);
+  for (const e of EVIDENCE) assert.ok(md.data.report.includes(e.text), `evidence line missing: ${e.id}`);
+  assert.equal(md.text.includes("finance team"), false);
+
+  // The rule reads the same on every call, whatever else the caller asks for.
+  const scopedJson = await call({ epic: "2", format: "json" });
+  assert.deepEqual(scopedJson.data.rule, audit.data.rule);
+
+  // Scoping: one epic, one story.
+  assert.deepEqual(scopedJson.data.progress, { done: 1, total: 4, percent: 25 });
+  assert.deepEqual(scopedJson.data.provenDone, { done: 1, total: 4, percent: 25 });
+  assert.equal(scopedJson.data.unprovenSignOff.count, 0);
+  assert.equal(scopedJson.data.ruleBreaks.blockedIncomplete.count, 2);
+  const story = await call({ epic: "1.3", format: "json" });
+  assert.deepEqual(story.data.progress, { done: 2, total: 2, percent: 100 });
+  assert.deepEqual(story.data.provenDone, { done: 0, total: 2, percent: 0 });
+  assert.equal(story.data.unprovenSignOff.count, 1);
+
+  // Nothing in a Done list means nothing is proven and nothing is waiting for sign-off.
+  const noneDone = await call({ doneLists: ["Live"], format: "json" });
+  assert.deepEqual(noneDone.data.progress, { done: 0, total: 10, percent: 0 });
+  assert.deepEqual(noneDone.data.provenDone, { done: 0, total: 10, percent: 0 });
+  assert.equal(noneDone.data.unprovenSignOff.count, 0);
+
+  // Proven done can never exceed done: a card with evidence that is not in Done does not count.
+  mockCards = fixtureCards().map((c) => (c.id === "t131" ? { ...c, idList: "L2", attachments: PR } : c));
+  const early = await call({ format: "json" });
+  assert.deepEqual(early.data.progress, { done: 6, total: 10, percent: 60 });
+  assert.deepEqual(early.data.provenDone, { done: 4, total: 10, percent: 40 });
+  // Story 1.3 is no longer complete, so it no longer looks ready.
+  assert.equal(early.data.unprovenSignOff.count, 0);
+  mockCards = fixtureCards();
+
+  // Comments are read a full page at a time, newest first, following `before`. A
+  // "deployed" comment on the second page still counts.
+  const filler = (page) => Array.from({ length: 1000 }, (_, i) => comment(`p${page}-${i}`, "nobody", "noise", "2026-10-01T00:00:00.000Z"));
+  actionPages = ({ before }) =>
+    before ? [...fixtureComments, comment("old", "t121", "Deployed on Tuesday.", "2026-09-01T00:00:00.000Z")] : filler(0);
+  const paged = await call({ format: "json" });
+  const actionReqs = sent.filter((r) => r.path.endsWith("/actions"));
+  assert.equal(actionReqs.length, 2);
+  assert.equal(actionReqs[0].params.before, undefined);
+  assert.equal(actionReqs[1].params.before, "p0-999");
+  assert.equal(paged.data.provenDone.done, 5, "1.2.1 is proven by a comment on page two");
+  assert.equal(paged.data.warnings.commentsPossiblyTruncated, false);
+
+  // A board with endless comments stops at a cap and says the answer may be incomplete,
+  // instead of looping or claiming certainty.
+  actionPages = ({ before }) => filler(before ? Number(before.slice(1).split("-")[0]) + 1 : 0);
+  const endless = await call();
+  assert.equal(sent.filter((r) => r.path.endsWith("/actions")).length, 10);
+  assert.match(endless.data.report, /_Note: .*comments.*may be incomplete/);
+
+  // If Trello ignored `before` and served the first page again, the read stops at once and
+  // says it is incomplete, instead of counting the same comments ten times.
+  actionPages = () => filler(0);
+  const repeated = await call({ format: "json" });
+  assert.equal(sent.filter((r) => r.path.endsWith("/actions")).length, 2);
+  assert.equal(repeated.data.warnings.commentsPossiblyTruncated, true);
+  actionPages = () => fixtureComments;
+
+  // Card names are shown as text in the markdown lists, not read as formatting.
+  mockCards = fixtureCards().map((c) => (c.id === "t132" ? { ...c, name: "1.3.2. *Bio* [draft]" } : c));
+  const escaped = await call();
+  assert.ok(escaped.data.report.includes("1.3.2. \\*Bio\\* \\[draft\\]"), escaped.data.report);
+  mockCards = fixtureCards();
+
+  // Arguments are checked before any request goes out.
+  for (const [args, pattern] of [
+    [{ epic: "9" }, /No card numbered "9" on this board\. Top-level numbers: 1, 2\./],
+    [{ format: "pdf" }, /format must be one of "markdown", "json", got "pdf"/],
+    [{ doneLists: "Done" }, /doneLists for getOutcomeAudit must be array, got string/],
+    [{ staleDays: 7 }, /Unknown argument for getOutcomeAudit: staleDays/],
+  ]) {
+    const bad = await call(args);
+    assert.equal(bad.isError, true, JSON.stringify(args));
+    assert.match(bad.text, pattern);
+  }
+
+  // A board with no numbered cards says what the tool looks for, rather than printing 0%.
+  mockCards = [{ id: "z", name: "Fix the printer", idList: "L1" }];
+  const empty = await call();
+  assert.equal(empty.isError, true);
+  assert.match(empty.text, /No numbered cards on this board/);
+  mockCards = fixtureCards();
+
+  // Pure layer: the same facts in, the same audit out, and the first of two cards that
+  // share a number is the one read, as in the status report.
+  const dupes = indexFacts(
+    [
+      { id: "d1", name: "1.1.1. Twin", attachments: PR },
+      { id: "d2", name: "1.1.1. Twin again" },
+    ],
+    {},
+    new Map(),
+  );
+  assert.equal(dupes.size, 1);
+  assert.equal(dupes.get("1.1.1").pullRequest, true);
+  const tree = buildTree({ cards: fixtureCards(), lists, checklists: { t122: [fixtureChecklists[0]], t221: [fixtureChecklists[1]] } });
+  const facts = indexFacts(fixtureCards(), { t122: [fixtureChecklists[0]], t221: [fixtureChecklists[1]] }, new Map());
+  const pure = buildOutcomeAudit(tree.roots, facts);
+  assert.deepEqual(pure.progress, { done: 7, total: 10, percent: 70 });
+  // No comments were passed here, so the "deployed" card (1.1.2) is the one that drops out.
+  assert.deepEqual(pure.provenDone, { done: 3, total: 10, percent: 30 });
+  assert.match(renderOutcomeAudit("B", pure, { now: Date.parse("2026-11-07T00:00:00Z") }), /^# Outcome audit: B\n_2026-11-07_/);
 }
 
 globalThis.fetch = realFetch;

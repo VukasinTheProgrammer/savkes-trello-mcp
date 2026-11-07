@@ -79,6 +79,9 @@ export function countOpenCriteria(checklists = []) {
 // Duplicate numbers keep the first card and report the rest (auditCardHierarchy is the
 // tool that sorts those out). A card whose parent number is missing becomes a root of its
 // own and is flagged, so it still shows up in the totals instead of vanishing.
+// floor, not round: 249 of 250 must not read as 100%. Nothing to do reads as 0%.
+export const percentOf = (done, total) => (total === 0 ? 0 : done === total ? 100 : Math.floor((100 * done) / total));
+
 export function buildTree({ cards, lists = {}, checklists = {}, isDoneList = doneListTest() }) {
   const nodes = new Map();
   const duplicates = [];
@@ -141,8 +144,7 @@ export function buildTree({ cards, lists = {}, checklists = {}, isDoneList = don
         node.done += child.done;
       }
     }
-    // floor, not round: 249 of 250 must not read as 100%.
-    node.percent = node.done === node.total ? 100 : Math.floor((100 * node.done) / node.total);
+    node.percent = percentOf(node.done, node.total);
   };
   roots.forEach(rollUp);
 
@@ -164,23 +166,30 @@ export function scopeTo(tree, number) {
   return [node];
 }
 
-const walk = (nodes, fn) => {
+export const walk = (nodes, fn) => {
   for (const node of nodes) {
     fn(node);
     walk(node.children, fn);
   }
 };
 const complete = (node) => node.done === node.total;
-const depthOf = (node) => node.number.split(".").length;
+export const depthOf = (node) => node.number.split(".").length;
+
+// A story the status report calls ready for sign-off: every work item under it is done,
+// it has acceptance criteria, and none of its checklist criteria is left unticked.
+// One definition, shared with getOutcomeAudit, so the two tools can never disagree
+// about which stories look ready.
+export const isSignOffReady = (node) =>
+  depthOf(node) === 2 && node.criteria > 0 && complete(node) && node.criteriaOpen === 0;
 // What a card is, by depth. Used so a report scoped to a story calls it a story.
 const TIERS = [
   ["epic", "epics"],
   ["story", "stories"],
   ["task", "tasks"],
 ];
-const tierOf = (node) => (TIERS[depthOf(node) - 1] ?? ["item", "items"])[0];
-const plural = (tier, n) => (n === 1 ? tier : (TIERS.find(([one]) => one === tier)?.[1] ?? `${tier}s`));
-const cap = (items) => ({ count: items.length, items: items.slice(0, SHOWN) });
+export const tierOf = (node) => (TIERS[depthOf(node) - 1] ?? ["item", "items"])[0];
+export const plural = (tier, n) => (n === 1 ? tier : (TIERS.find(([one]) => one === tier)?.[1] ?? `${tier}s`));
+export const cap = (items) => ({ count: items.length, items: items.slice(0, SHOWN) });
 
 // Everything the report and the JSON output say, as data.
 export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
@@ -232,14 +241,14 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
     if (depthOf(node) === 2) {
       if (node.criteria === 0) noCriteria.push({ number: node.number, name: node.name });
       else if (!open && node.criteriaOpen > 0) unmetCriteria.push({ number: node.number, name: node.name, open: node.criteriaOpen });
-      else if (!open) readyForSignOff.push({ number: node.number, name: node.name, criteria: node.criteria });
+      else if (isSignOffReady(node)) readyForSignOff.push({ number: node.number, name: node.name, criteria: node.criteria });
     }
   });
   stale.sort((a, b) => b.daysIdle - a.daysIdle);
   overdue.sort((a, b) => b.daysLate - a.daysLate);
 
   return {
-    progress: { done, total, percent: total === 0 ? 0 : done === total ? 100 : Math.floor((100 * done) / total) },
+    progress: { done, total, percent: percentOf(done, total) },
     // The top of the scope: epics for the whole board, or the one story or task that
     // `epic` narrowed it to. Each entry says which tier it is.
     items: placed.map((root) => ({
@@ -272,12 +281,14 @@ export function buildReport(roots, { now = Date.now(), staleDays = 14 } = {}) {
   };
 }
 
-const bar = (percent) => {
+export const bar = (percent) => {
   const filled = Math.floor((percent * BAR_WIDTH) / 100);
   return "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
 };
-const cell = (text) => String(text).replace(/\|/g, "\\|");
-const more = (group) => (group.count > group.items.length ? ` (+${group.count - group.items.length} more)` : "");
+export const cell = (text) => String(text).replace(/\|/g, "\\|");
+// A card name as plain text inside markdown: its *, _, `, [ ] and < > are shown, not obeyed.
+export const mdText = (text) => String(text).replace(/([\\`*_[\]<>|])/g, "\\$1");
+export const more = (group) => (group.count > group.items.length ? ` (+${group.count - group.items.length} more)` : "");
 
 // The report a person would send a client: no ids, no JSON, plain sentences.
 export function renderReport(boardName, report, { now = Date.now() } = {}) {

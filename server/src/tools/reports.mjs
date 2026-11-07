@@ -3,6 +3,7 @@
 // fetches the board and maps tool arguments onto it.
 
 import { resolveBoard, trello } from "../trello/client.mjs";
+import { buildOutcomeAudit, indexFacts, renderOutcomeAudit } from "../utils/outcome.mjs";
 import {
   buildReport,
   buildTree,
@@ -17,15 +18,17 @@ const CARD_READ_LIMIT = 1000;
 
 // Reads in parallel. Descriptions and checklists are only needed to count acceptance
 // criteria, so the board map (criteria: false) skips both; the report reads them and
-// returns counts, never the text.
-async function loadTree(board, doneLists, { criteria = true } = {}) {
+// returns counts, never the text. `extraCardFields` and `extraCardParams` let the outcome
+// audit ask for members and attachments on the same single cards request.
+async function loadTree(board, doneLists, { criteria = true, extraCardFields = "", extraCardParams = {} } = {}) {
   const [info, lists, cards, checklists] = await Promise.all([
     trello("GET", `/boards/${board}`, { fields: "name" }),
     // filter=all, so a card is never shown under "(unknown list)" because its list was archived.
     trello("GET", `/boards/${board}/lists`, { fields: "name", filter: "all" }),
     // Trello's default "visible" filter already leaves archived cards out.
     trello("GET", `/boards/${board}/cards`, {
-      fields: `name,shortLink,idList,due,dueComplete,dateLastActivity,labels${criteria ? ",desc" : ""}`,
+      fields: `name,shortLink,idList,due,dueComplete,dateLastActivity,labels${criteria ? ",desc" : ""}${extraCardFields ? `,${extraCardFields}` : ""}`,
+      ...extraCardParams,
     }),
     criteria
       ? trello("GET", `/boards/${board}/checklists`, { fields: "name,idCard", checkItem_fields: "name,state" })
@@ -48,8 +51,66 @@ async function loadTree(board, doneLists, { criteria = true } = {}) {
         "findCards to see what the cards are called.",
     );
   }
-  return { name: info.name, tree, cardCount: cards.length };
+  return { name: info.name, tree, cardCount: cards.length, cards, checklistsByCard };
 }
+
+// Every comment on the board, grouped by card, in whole pages of Trello's maximum size,
+// newest first, each page continuing `before` the oldest action of the last. Capped, because
+// a board with endless comments must not turn one call into an endless loop; when the cap
+// is hit the caller is told, since a "deployed" comment further back would then be missed.
+const COMMENT_PAGE = 1000;
+const COMMENT_PAGES = 10;
+
+async function loadComments(board) {
+  const byCard = new Map();
+  let before;
+  let firstId;
+  for (let pages = 1; ; pages++) {
+    const page = await trello("GET", `/boards/${board}/actions`, {
+      filter: "commentCard",
+      limit: COMMENT_PAGE,
+      // No `fields` filter: paging continues from each action's `id`, so it must always be there.
+      memberCreator: false,
+      before,
+    });
+    const actions = Array.isArray(page) ? page : [];
+    // If Trello ever ignored `before`, every page would be the first one again. Stop and say
+    // the read is incomplete rather than count the same comments ten times.
+    if (before && actions[0]?.id === firstId) return { byCard, truncated: true };
+    if (!before) firstId = actions[0]?.id;
+    for (const action of actions) {
+      const cardId = action.data?.card?.id;
+      if (!cardId) continue;
+      if (!byCard.has(cardId)) byCard.set(cardId, []);
+      byCard.get(cardId).push({ text: action.data?.text ?? "", date: action.date });
+    }
+    if (actions.length < COMMENT_PAGE) return { byCard, truncated: false };
+    if (pages >= COMMENT_PAGES) return { byCard, truncated: true };
+    before = actions.at(-1).id;
+  }
+}
+
+// What the board says about itself that a reader should know before trusting the numbers.
+const boardWarnings = (tree, cardCount) => ({
+  duplicateNumbers: tree.duplicates.length,
+  orphans: [...tree.nodes.values()].filter((n) => n.orphan).length,
+  // One request reads every card. If Trello returned exactly this many it may have
+  // stopped there, so say so instead of presenting partial numbers as the whole board.
+  possiblyTruncated: cardCount >= CARD_READ_LIMIT,
+});
+
+const boardNotes = (warnings, cardCount) => {
+  const notes = [];
+  if (warnings.duplicateNumbers || warnings.orphans) {
+    notes.push(`${warnings.duplicateNumbers} duplicate and ${warnings.orphans} orphaned card numbers on the board; run auditCardHierarchy.`);
+  }
+  if (warnings.possiblyTruncated) {
+    notes.push(`the board returned ${cardCount} cards, which may be Trello's limit for one request, so this report may be partial.`);
+  }
+  return notes;
+};
+
+const noteBlock = (notes) => (notes.length ? `\n\n${notes.map((n) => `_Note: ${n}_`).join("\n")}` : "");
 
 const oneOf = (name, value, allowed) => {
   if (!allowed.includes(value)) {
@@ -106,23 +167,82 @@ export const TOOLS = {
       const { name, tree, cardCount } = await loadTree(board, doneLists);
       const now = Date.now();
       const report = buildReport(scopeTo(tree, epic), { now, staleDays });
-      const warnings = {
-        duplicateNumbers: tree.duplicates.length,
-        orphans: [...tree.nodes.values()].filter((n) => n.orphan).length,
-        // One request reads every card. If Trello returned exactly this many it may have
-        // stopped there, so say so instead of presenting partial numbers as the whole board.
-        possiblyTruncated: cardCount >= CARD_READ_LIMIT,
-      };
+      const warnings = boardWarnings(tree, cardCount);
       if (format === "json") return { boardId: board, board: name, format, ...report, warnings };
-      const notes = [];
-      if (warnings.duplicateNumbers || warnings.orphans) {
-        notes.push(`${warnings.duplicateNumbers} duplicate and ${warnings.orphans} orphaned card numbers on the board; run auditCardHierarchy.`);
+      return {
+        boardId: board,
+        board: name,
+        format,
+        report: renderReport(name, report, { now }) + noteBlock(boardNotes(warnings, cardCount)),
+      };
+    },
+  },
+
+  getOutcomeAudit: {
+    description:
+      "Checks whether work marked Done has evidence behind it, reading only Trello. Works on " +
+      "boards that use the numbered hierarchy (EPIC 1 -> 1.1 story -> 1.1.1 task), like " +
+      "getStatusReport. It does four things. (1) Next to the usual percent-done it gives a " +
+      "second number, proven done: a work item counts only if it sits in a Done-style list AND " +
+      "its card carries evidence, which is a pull-request link attached, a comment saying it " +
+      "was deployed, or a Definition of Done checklist with every item ticked. (2) It lists " +
+      "stories that look ready for sign-off because every work item under them is Done, but " +
+      "where none of those work items shows any evidence. (3) It reads the team rule the same " +
+      "way on every call: a Done card has a pull request attached and its acceptance-criteria " +
+      "checklist ticked, and a Blocked card names exactly one member and has one sentence (its " +
+      "newest comment) saying why; cards that break it are listed. (4) The rule and the " +
+      "evidence definitions are printed with every result, so they cannot drift between runs. " +
+      "Evidence means a link or a note is on the card, not that the pull request was merged. " +
+      "Read-only: nothing is moved or changed, cards are reported and people are not (no " +
+      "member names, ids or comment text come back). By default returns { boardId, board, " +
+      "format, report } with report as markdown; with format \"json\" it returns the same " +
+      "numbers as structured fields. Use getStatusReport for the delivery report itself. " +
+      "boardId defaults to TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        boardId: boardProp,
+        epic: epicProp,
+        format: {
+          type: "string",
+          description: '"markdown" (default; ready to paste into an update) or "json"',
+        },
+        doneLists: {
+          type: "array",
+          items: { type: "string" },
+          description: "Exact names of the lists that hold finished work, e.g. [\"Shipped\"]. Default: Done, Completed, Shipped, Released, Closed",
+        },
+      },
+    },
+    async run({ boardId, epic, format = "markdown", doneLists } = {}) {
+      oneOf("format", format, ["markdown", "json"]);
+      const board = resolveBoard(boardId);
+      // Comments come from their own paged request; everything else is the same four reads
+      // the status report makes, plus members and attachment links on the cards.
+      const [{ name, tree, cardCount, cards, checklistsByCard }, comments] = await Promise.all([
+        loadTree(board, doneLists, {
+          extraCardFields: "idMembers",
+          extraCardParams: { attachments: true, attachment_fields: "url" },
+        }),
+        loadComments(board),
+      ]);
+      const facts = indexFacts(cards, checklistsByCard, comments.byCard);
+      const audit = buildOutcomeAudit(scopeTo(tree, epic), facts);
+      const warnings = { ...boardWarnings(tree, cardCount), commentsPossiblyTruncated: comments.truncated };
+      if (format === "json") return { boardId: board, board: name, format, ...audit, warnings };
+      const notes = boardNotes(warnings, cardCount);
+      if (warnings.commentsPossiblyTruncated) {
+        notes.push(
+          `the board has more comments than were read (${COMMENT_PAGES * COMMENT_PAGE}), so a "deployed" comment or a Blocked reason further back may be missed; the numbers above may be incomplete.`,
+        );
       }
-      if (warnings.possiblyTruncated) {
-        notes.push(`the board returned ${cardCount} cards, which may be Trello's limit for one request, so this report may be partial.`);
-      }
-      const note = notes.length ? `\n\n${notes.map((n) => `_Note: ${n}_`).join("\n")}` : "";
-      return { boardId: board, board: name, format, report: renderReport(name, report, { now }) + note };
+      return {
+        boardId: board,
+        board: name,
+        format,
+        report: renderOutcomeAudit(name, audit) + noteBlock(notes),
+      };
     },
   },
 
