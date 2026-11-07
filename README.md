@@ -11,7 +11,7 @@ Use it two ways:
   `@modelcontextprotocol/sdk`. Here you can read every byte that crosses the
   wire, from the `initialize` handshake to a tool result, in a single
   270-line file.
-- **As a real Trello integration for Claude Code.** It has 34 tools, 5
+- **As a real Trello integration for Claude Code.** It has 40 tools, 5
   prompts, 3 resources, and a draft → review → push workflow for creating
   numbered epic/story/task cards.
 
@@ -228,13 +228,14 @@ start `claude` from the repo root, and `.mcp.json` does the rest.
 
 ## What's included
 
-### Tools (34)
+### Tools (40)
 
 | Group | Tools |
 |---|---|
 | **Read** | `getMyBoards` `getLists` `getLabels` `getBoardMembers` `getCard` `getCardsByList` `getMyCards` `getRecentActivity` `getCardChecklists` `listCardAttachments` `findCard` `findCards` |
 | **Write (additive)** | `addCard` `addList` `addComment` `addChecklist` `addChecklistItem` `moveCard` `unarchiveCard` `attachCard` `placeCards` |
 | **Write (destructive)** | `updateCard` `changeCardMembers` `archiveCard` `archiveList` `updateComment` `deleteComment` `updateChecklistItem` `deleteChecklist` `detachCard` |
+| **Labels and fields** | `createLabel` `updateLabel` `getCustomFields` `getCardCustomFields` `createCustomField` `setCustomFieldValue` (custom fields need the Custom Fields Power-Up on the board) |
 | **Hierarchy** | `listBoardCardLinks` `auditCardHierarchy` `nextCardNumbers` `repairCardHierarchy` (with `dryRun`) |
 
 **Read-only mode.** Set `TRELLO_READONLY=1` (or `true`/`yes`) in the server's

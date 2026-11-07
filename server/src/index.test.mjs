@@ -230,11 +230,11 @@ assert.deepEqual(spreadPositions(2000, 1000, 2), [3024, 4048]);
 // tight on its own. Only <= 0 is unusable.
 assert.deepEqual(spreadPositions(1000, 1001, 3), [1000.25, 1000.5, 1000.75]);
 
-// 16 ported from mcp-trello + 9 from the wrapper + 9 added since = 34. A name
-// collision between the halves would silently drop a tool, so the count is asserted
-// alongside the names. This is the only place the total is written down.
+// 16 ported from mcp-trello + 9 from the wrapper + 9 added since + 6 label/custom-field
+// tools = 40. A name collision between the halves would silently drop a tool, so the
+// count is asserted alongside the names. This is the only place the total is written down.
 const list = await handle({ id: 1, method: "tools/list" });
-assert.equal(list.tools.length, 34);
+assert.equal(list.tools.length, 40);
 assert.deepEqual(
   list.tools.map((t) => t.name).sort(),
   [
@@ -248,6 +248,8 @@ assert.deepEqual(
     "attachCard",
     "auditCardHierarchy",
     "changeCardMembers",
+    "createCustomField",
+    "createLabel",
     "deleteChecklist",
     "deleteComment",
     "detachCard",
@@ -256,7 +258,9 @@ assert.deepEqual(
     "getBoardMembers",
     "getCard",
     "getCardChecklists",
+    "getCardCustomFields",
     "getCardsByList",
+    "getCustomFields",
     "getLabels",
     "getLists",
     "getMyBoards",
@@ -268,12 +272,27 @@ assert.deepEqual(
     "nextCardNumbers",
     "placeCards",
     "repairCardHierarchy",
+    "setCustomFieldValue",
     "unarchiveCard",
     "updateCard",
     "updateChecklistItem",
     "updateComment",
+    "updateLabel",
   ],
 );
+// Label and custom-field tools reject bad input before any request is sent, so these
+// need no fetch recorder.
+const rejects = async (name, args, pattern) => {
+  const r = await handle({ id: 80, method: "tools/call", params: { name, arguments: args } });
+  assert.equal(r.isError, true, `${name} should reject ${JSON.stringify(args)}`);
+  assert.match(r.content[0].text, pattern);
+};
+await rejects("setCustomFieldValue", { cardId: "c", customFieldId: "f" }, /exactly one of/);
+await rejects("setCustomFieldValue", { cardId: "c", customFieldId: "f", text: "a", number: 1 }, /exactly one of/);
+await rejects("createCustomField", { name: "Area", type: "list" }, /needs options/);
+await rejects("createCustomField", { name: "Area", type: "text", options: ["a"] }, /only for type list/);
+await rejects("createCustomField", { name: "Area", type: "dropdown" }, /type must be one of/);
+await rejects("updateLabel", { labelId: "l" }, /name, color, or both/);
 // Every tool declares an object schema, so the validator always has something to
 // check against — a tool added without one would silently accept anything.
 assert.equal(

@@ -139,8 +139,11 @@ export function buildUrl(path, params = {}) {
   return url;
 }
 
-export async function trello(method, path, params = {}) {
+// `body` is only for the few endpoints that need nested JSON a query string can't carry
+// (custom field options and values). Everything else keeps using `params`.
+export async function trello(method, path, params = {}, body = undefined) {
   const headers = { Accept: "application/json", Authorization: authHeader() };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const url = buildUrl(path, params);
   for (let attempt = 1; ; attempt++) {
     await BUCKET.take();
@@ -149,6 +152,7 @@ export async function trello(method, path, params = {}) {
     const res = await fetch(url, {
       method,
       headers,
+      ...(body !== undefined && { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
@@ -162,19 +166,21 @@ export async function trello(method, path, params = {}) {
       continue;
     }
 
-    const body = await res.text();
+    // Not `body`: that is the request-body parameter above, and a const of the same name
+    // in this block puts the `fetch` call's reference to it in the temporal dead zone.
+    const text = await res.text();
     if (!res.ok) {
       const gaveUp = res.status === 429 ? ` (gave up after ${MAX_ATTEMPTS} attempts)` : "";
       throw new Error(
-        `Trello ${res.status} ${res.statusText}${gaveUp}: ${redact(body).slice(0, 500)}`,
+        `Trello ${res.status} ${res.statusText}${gaveUp}: ${redact(text).slice(0, 500)}`,
       );
     }
 
-    if (!body.trim()) return { ok: true };
+    if (!text.trim()) return { ok: true };
     try {
-      return JSON.parse(body);
+      return JSON.parse(text);
     } catch {
-      return { ok: true, body };
+      return { ok: true, body: text };
     }
   }
 }
