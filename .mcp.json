@@ -9,7 +9,8 @@
 			"env": {
 				"TRELLO_API_KEY": "${TRELLO_API_KEY}",
 				"TRELLO_TOKEN": "${TRELLO_TOKEN}",
-				"TRELLO_BOARD_ID": "${TRELLO_BOARD_ID}"
+				"TRELLO_BOARD_ID": "${TRELLO_BOARD_ID}",
+				"TRELLO_READONLY": "${TRELLO_READONLY:-0}"
 			}
 		}
 	}

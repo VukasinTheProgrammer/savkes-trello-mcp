@@ -35,7 +35,9 @@ export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS };
 // TRELLO_READONLY=1 (or true/yes) serves only tools annotated readOnlyHint: true, for
 // unattended runs and anyone who wants the model unable to write. Deny by default: a
 // tool with no annotation is treated as a writer. An unset variable can arrive as the
-// literal text "${TRELLO_READONLY}" (see .mcp.json), which must read as off, not on.
+// literal text "${TRELLO_READONLY}", which must read as off, not on. .mcp.json passes the
+// variable through with a default of 0, so exporting TRELLO_READONLY=1 before starting
+// the client is enough.
 // Read per call, not at import, so the selftest can flip it.
 export const isReadOnly = (env = process.env) => {
   const v = String(env.TRELLO_READONLY ?? "").trim().toLowerCase();
