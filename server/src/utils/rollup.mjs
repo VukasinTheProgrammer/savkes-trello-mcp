@@ -10,7 +10,7 @@
 
 import { cardNumber, parentNumber } from "./numbering.mjs";
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 const BAR_WIDTH = 10;
 // Lists in the report are capped so a board with 80 idle cards doesn't turn the
 // write-up into a wall of text. The count always covers every card; only the names stop.
@@ -177,8 +177,6 @@ export const depthOf = (node) => node.number.split(".").length;
 
 // A story the status report calls ready for sign-off: every work item under it is done,
 // it has acceptance criteria, and none of its checklist criteria is left unticked.
-// One definition, shared with getOutcomeAudit, so the two tools can never disagree
-// about which stories look ready.
 export const isSignOffReady = (node) =>
   depthOf(node) === 2 && node.criteria > 0 && complete(node) && node.criteriaOpen === 0;
 // What a card is, by depth. Used so a report scoped to a story calls it a story.
@@ -285,7 +283,6 @@ export const bar = (percent) => {
   const filled = Math.floor((percent * BAR_WIDTH) / 100);
   return "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
 };
-export const cell = (text) => String(text).replace(/\|/g, "\\|");
 // A card name as plain text inside markdown: its *, _, `, [ ] and < > are shown, not obeyed.
 export const mdText = (text) => String(text).replace(/([\\`*_[\]<>|])/g, "\\$1");
 export const more = (group) => (group.count > group.items.length ? ` (+${group.count - group.items.length} more)` : "");
@@ -304,7 +301,7 @@ export function renderReport(boardName, report, { now = Date.now() } = {}) {
     "## Progress",
     "| | Progress | Done |",
     "|---|---|---|",
-    ...items.map((e) => `| ${cell(e.name)} | ${bar(e.percent)} ${e.percent}% | ${e.done} / ${e.total} |`),
+    ...items.map((e) => `| ${mdText(e.name)} | ${bar(e.percent)} ${e.percent}% | ${e.done} / ${e.total} |`),
     "",
   );
 
@@ -312,7 +309,7 @@ export function renderReport(boardName, report, { now = Date.now() } = {}) {
     out.push(
       "## Ready for sign-off",
       ...readyForSignOff.items.map(
-        (s) => `- **${s.name}**: every work item done, ${s.criteria} acceptance ${s.criteria === 1 ? "criterion" : "criteria"}`,
+        (s) => `- **${mdText(s.name)}**: every work item done, ${s.criteria} acceptance ${s.criteria === 1 ? "criterion" : "criteria"}`,
       ),
     );
     if (readyForSignOff.count > readyForSignOff.items.length) out.push(`- …${more(readyForSignOff).trim()}`);
@@ -324,16 +321,16 @@ export function renderReport(boardName, report, { now = Date.now() } = {}) {
     if (!group.count) return;
     lines.push(`- **${label} (${group.count}):** ${group.items.map(describe).join("; ")}${more(group)}`);
   };
-  add("Blocked", attention.blocked, (c) => `${c.name} [${c.list}]`);
-  add("Overdue", attention.overdue, (c) => `${c.name}, ${c.daysLate} ${c.daysLate === 1 ? "day" : "days"} late`);
-  add(`No activity for ${attention.stale.afterDays}+ days`, attention.stale, (c) => `${c.name} [${c.list}], idle ${c.daysIdle} days`);
-  add("Stories without acceptance criteria", attention.storiesWithoutCriteria, (c) => c.name);
-  add("Done but acceptance criteria not ticked", attention.storiesWithUnmetCriteria, (c) => `${c.name}, ${c.open} open`);
-  add("Parent card missing", attention.missingParent, (c) => `${c.name} (no ${c.expectedParent})`);
+  add("Blocked", attention.blocked, (c) => `${mdText(c.name)} [${mdText(c.list)}]`);
+  add("Overdue", attention.overdue, (c) => `${mdText(c.name)}, ${c.daysLate} ${c.daysLate === 1 ? "day" : "days"} late`);
+  add(`No activity for ${attention.stale.afterDays}+ days`, attention.stale, (c) => `${mdText(c.name)} [${mdText(c.list)}], idle ${c.daysIdle} days`);
+  add("Stories without acceptance criteria", attention.storiesWithoutCriteria, (c) => mdText(c.name));
+  add("Done but acceptance criteria not ticked", attention.storiesWithUnmetCriteria, (c) => `${mdText(c.name)}, ${c.open} open`);
+  add("Parent card missing", attention.missingParent, (c) => `${mdText(c.name)} (no ${c.expectedParent})`);
   out.push("## Needs attention", ...(lines.length ? lines : ["Nothing needs attention."]), "");
 
   const where = Object.entries(openByList).sort((a, b) => b[1] - a[1]);
-  if (where.length) out.push("## Where the open work sits", where.map(([list, n]) => `${list}: ${n}`).join(" · "), "");
+  if (where.length) out.push("## Where the open work sits", where.map(([list, n]) => `${mdText(list)}: ${n}`).join(" · "), "");
 
   return out.join("\n").trimEnd();
 }

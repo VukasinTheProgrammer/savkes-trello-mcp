@@ -10,7 +10,7 @@
 // both are reduced to a yes/no before anything leaves this file.
 
 import { cardNumber } from "./numbering.mjs";
-import { bar, cap, cell, isSignOffReady, mdText, more, percentOf, tierOf, walk, depthOf } from "./rollup.mjs";
+import { DAY_MS, bar, cap, mdText, more, percentOf, tierOf, walk, depthOf } from "./rollup.mjs";
 
 // The team rule, in one place and in these words, so every audit reads it the same way.
 // Printed with every result: a reader never has to guess which rule produced the list.
@@ -74,10 +74,22 @@ const sentences = (text) => {
   return parts.map((s) => s.trim()).filter(Boolean);
 };
 
+// Only the clause that names the deploy, and what comes before it, is read for a denial or a
+// condition: "If QA passes, deployed tonight" is no proof, but "Deployed to production, ping
+// me if anything breaks" is, because the "if" belongs to a later clause.
+const upToDeployClause = (s) => {
+  const at = s.search(DEPLOYED);
+  const end = s.slice(at).search(/[,;:\u2013\u2014]|\s-\s/);
+  return end === -1 ? s : s.slice(0, at + end);
+};
+const isDeployedSentence = (s) => {
+  if (!DEPLOYED.test(s) || s.endsWith("?") || UNDONE.test(s)) return false;
+  const head = upToDeployClause(s);
+  return !NOT_PROVEN.test(head) && !DEFERRED.test(head);
+};
+
 export function isDeployedComment(text) {
-  return sentences(text).some(
-    (s) => DEPLOYED.test(s) && !s.endsWith("?") && !NOT_PROVEN.test(s) && !DEFERRED.test(s) && !UNDONE.test(s),
-  );
+  return sentences(text).some(isDeployedSentence);
 }
 
 // Comments newest first: the newest one that speaks about the deploy decides. A rollback
@@ -85,9 +97,13 @@ export function isDeployedComment(text) {
 // means there is.
 export function hasDeployedProof(comments) {
   const newestFirst = [...(comments ?? [])].sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  // Inside one comment the last sentence about the deploy decides too: "Rolled back v2.0.
+  // Deployed v2.1." is proof, "Deployed v2.1. Rolled it back." is not.
   for (const c of newestFirst) {
-    if (sentences(c.text).some((s) => UNDONE.test(s))) return false;
-    if (isDeployedComment(c.text)) return true;
+    for (const s of sentences(c.text).reverse()) {
+      if (UNDONE.test(s)) return false;
+      if (isDeployedSentence(s)) return true;
+    }
   }
   return false;
 }
@@ -140,7 +156,6 @@ export function indexFacts(cards, checklistsByCard = {}, commentsByCard = new Ma
   return facts;
 }
 
-const DAY = 24 * 60 * 60 * 1000;
 const hasEvidence = (f) => Boolean(f && (f.pullRequest || f.deployedComment || f.definitionOfDone));
 
 // --- The audit ----------------------------------------------------------------
@@ -187,8 +202,9 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.
     const isLeaf = node.children.length === 0;
     const f = factsOf(node);
 
-    // Stories that look ready (the status report's own test) with nothing to show for it.
-    if (isSignOffReady(node) && provenBy.get(node.number) === 0) {
+    // Stories whose work items are all Done, with nothing to show for it. Acceptance criteria
+    // are not required here: a story with none is the easiest one to sign off without proof.
+    if (depthOf(node) === 2 && node.total > 0 && node.done === node.total && provenBy.get(node.number) === 0) {
       unprovenSignOff.push({ number: node.number, name: node.name, workItems: node.total });
     }
 
@@ -201,7 +217,7 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.
     // Done, but nothing on the card shows it: how long has it been like that?
     if (isLeaf && node.isDone && !hasEvidence(f)) {
       const since = Date.parse(f?.doneSince);
-      waiting.push({ number: node.number, name: node.name, days: Number.isNaN(since) ? null : Math.max(0, Math.floor((now - since) / DAY)) });
+      waiting.push({ number: node.number, name: node.name, days: Number.isNaN(since) ? null : Math.max(0, Math.floor((now - since) / DAY_MS)) });
     }
     if (isLeaf && node.isDone && node.blocked) blockedButDone.push({ number: node.number, name: node.name });
     if (finished && node.criteriaOpen > 0) {
@@ -221,6 +237,7 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.
   // Like the status report, a card whose parent is missing is counted in the totals but
   // is not an epic, so it is not a row of the table.
   const placed = roots.filter((r) => !r.orphan);
+  const missingParent = roots.length - placed.length;
 
   return {
     progress: { done, total, percent: percentOf(done, total) },
@@ -244,6 +261,8 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.
       blockedIncomplete: cap(blockedIncomplete),
     },
     inconsistent: { doneAndBlocked: cap(blockedButDone) },
+    // Cards whose parent number is missing: in the totals above, not rows of the table.
+    missingParent,
     exemptLabels: [...exempt],
     rule: TEAM_RULE,
     evidence: EVIDENCE,
@@ -253,20 +272,23 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.
 // --- The write-up -------------------------------------------------------------
 
 export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) {
-  const { progress, provenDone, items, unprovenSignOff, waiting, ruleBreaks, inconsistent, exemptLabels, rule, evidence } = audit;
+  const { progress, provenDone, items, unprovenSignOff, waiting, ruleBreaks, inconsistent, missingParent, exemptLabels, rule, evidence } = audit;
   const out = [`# Outcome audit: ${boardName}`, `_${new Date(now).toISOString().slice(0, 10)}_`, ""];
 
   const sit = progress.total === 1 ? "item sits" : "items sit";
   const shows = provenDone.done === 1 ? "shows" : "show";
   out.push(
     `**${progress.percent}% in Done. ${provenDone.percent}% with evidence.** ` +
-      `${progress.done} of ${progress.total} work ${sit} in Done; ${provenDone.done} of them ${shows} evidence.`,
+      `${progress.done} of ${progress.total} work ${sit} in Done; ${provenDone.done} of them ${shows} evidence.` +
+      (missingParent
+        ? ` The totals include ${missingParent} ${missingParent === 1 ? "card" : "cards"} whose parent is missing, ${missingParent === 1 ? "which is not a row" : "which are not rows"} of the table.`
+        : ""),
     "",
     "## Progress",
     "| | In Done | With evidence |",
     "|---|---|---|",
     ...items.map(
-      (i) => `| ${cell(i.name)} | ${bar(i.percent)} ${i.percent}% | ${bar(i.provenPercent)} ${i.provenPercent}% |`,
+      (i) => `| ${mdText(i.name)} | ${bar(i.percent)} ${i.percent}% | ${bar(i.provenPercent)} ${i.provenPercent}% |`,
     ),
     "",
     "## Sign-off without evidence",
@@ -289,7 +311,7 @@ export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) 
   if (waiting.count) {
     out.push(
       ...waiting.items.map(
-        (w) => `- **${mdText(w.name)}**: ` + (w.days === null ? "no move into Done found" : w.days === 0 ? "moved to Done today" : `${w.days} ${w.days === 1 ? "day" : "days"} in Done`),
+        (w) => `- **${mdText(w.name)}**: ` + (w.days === null ? "no date found for when it became Done" : w.days === 0 ? "moved to Done today" : `${w.days} ${w.days === 1 ? "day" : "days"} in Done`),
       ),
     );
     if (waiting.count > waiting.items.length) out.push(`- …${more(waiting).trim()}`);

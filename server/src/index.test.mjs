@@ -1310,6 +1310,9 @@ assert.equal(sawSignal.aborted, false);
   assert.deepEqual(report.items.map((e) => [e.number, e.tier]), [["1", "epic"], ["2", "epic"]]);
   assert.deepEqual(report.attention.missingParent.items, [{ number: "9.9.1", name: "9.9.1. Orphan", expectedParent: "9.9" }]);
   assert.match(md, /\*\*Parent card missing \(1\):\*\* 9\.9\.1\. Orphan \(no 9\.9\)/);
+  // Card names are text, not formatting, in the status report as in the audit.
+  const marked = buildTree({ cards: [{ id: "x", name: "EPIC 3. *Draft* [wip]", idList: "L" }], lists: { L: "Doing" } });
+  assert.ok(renderReport("B", buildReport(marked.roots, { now }), { now }).includes("| EPIC 3. \\*Draft\\* \\[wip\\] |"));
   assert.doesNotMatch(md, /\| 9\.9\.1\. Orphan \|/);
   // Scoped to a story, the report calls it a story and its children tasks.
   const storyReport = buildReport(scopeTo(tree, "1.2"), { now });
@@ -1491,6 +1494,9 @@ assert.equal(sawSignal.aborted, false);
     "Rolled out to all users.",
     "The feature went live this morning.",
     "Live in production since 9am.",
+    // A condition or follow-up in a later clause belongs to that clause, not to the deploy.
+    "Deployed to production, ping me if anything breaks.",
+    "Released v3; docs should follow.",
   ]) assert.equal(isDeployedComment(yes), true, yes);
   for (const no of [
     "Not deployed yet, waiting for the release window.",
@@ -1511,6 +1517,8 @@ assert.equal(sawSignal.aborted, false);
     "Is it live in production?",
     "Release is still unreleased.",
     "Shipped, then reverted.",
+    // A condition before the deploy still makes it no proof.
+    "If QA passes, deployed tonight.",
     "",
     undefined,
   ]) assert.equal(isDeployedComment(no), false, String(no));
@@ -1523,6 +1531,9 @@ assert.equal(sawSignal.aborted, false);
   assert.equal(hasDeployedProof([at("Deployed to production.", 1), at("Reverted the release.", 2)]), false, "order of the array does not matter");
   assert.equal(hasDeployedProof([at("Deployed again with the fix.", 3), at("Rolled back.", 2), at("Deployed.", 1)]), true);
   assert.equal(hasDeployedProof([at("Looks good.", 2), at("Deployed.", 1)]), true, "an unrelated newer comment changes nothing");
+  // Inside one comment the last sentence about the deploy decides.
+  assert.equal(hasDeployedProof([at("Rolled back v2.0 on Monday. Deployed v2.1 to production today.", 1)]), true);
+  assert.equal(hasDeployedProof([at("Deployed v2.1. Rolled back an hour later.", 1)]), false);
   assert.equal(hasDeployedProof([]), false);
   assert.equal(hasDeployedProof(undefined), false);
 
@@ -1727,7 +1738,7 @@ assert.equal(sawSignal.aborted, false);
   assert.match(cardsReq.fields, /\bidMembers\b/);
   assert.deepEqual(
     [...new Set(sent.filter((r) => r.path.endsWith("/actions")).map((r) => r.params.filter))].sort(),
-    ["commentCard", "createCard,updateCard:idList"],
+    ["commentCard", "createCard,updateCard:idList,updateCard:dueComplete"],
   );
   assert.equal(sent.find((r) => r.path.endsWith("/checklists")).params.checkItem_fields, "name,state");
 
@@ -1817,18 +1828,47 @@ assert.equal(sawSignal.aborted, false);
   // the waiting times that could not be read come back without an age instead of a wrong one.
   movePages = () => Array.from({ length: 1000 }, (_, i) => move(`q${i}`, "nobody", "Backlog", daysAgo(1)));
   const movesRepeated = await call({ format: "json" });
-  assert.equal(reqs("createCard,updateCard:idList").length, 2);
+  assert.equal(reqs("createCard,updateCard:idList,updateCard:dueComplete").length, 2);
   assert.equal(movesRepeated.data.warnings.movesPossiblyTruncated, true);
   assert.equal(movesRepeated.data.waiting.items.every((w) => w.days === null), true);
   const movesNote = await call();
   assert.match(movesNote.data.report, /_Note: .*card moves.*waiting times may be missing/);
-  assert.match(movesNote.data.report, /\*\*1\.2\.1\. Email\*\*: no move into Done found/);
+  assert.match(movesNote.data.report, /\*\*1\.2\.1\. Email\*\*: no date found for when it became Done/);
   movePages = () => fixtureMoves;
+
+  // Where a card sits now is its newest list action. t131 was moved into Done 9 days ago but
+  // out to Doing 5 days ago, so that old move no longer starts its clock; it still counts as
+  // Done because its due date is ticked, and that tick (4 days ago) is when it became Done.
+  const ticked = (id, card, date) => ({ id, type: "updateCard", date, data: { card: { id: card, dueComplete: true }, old: { dueComplete: false } } });
+  mockCards = fixtureCards().map((c) => (c.id === "t131" ? { ...c, idList: "L2", dueComplete: true } : c));
+  movePages = () => [ticked("d1", "t131", daysAgo(4)), move("m5", "t131", "Doing", daysAgo(5)), ...fixtureMoves];
+  const byTick = await call({ format: "json" });
+  assert.deepEqual(byTick.data.waiting.items.find((w) => w.number === "1.3.1"), { number: "1.3.1", name: "1.3.1. Avatar", days: 4 });
+  movePages = () => [move("m5", "t131", "Doing", daysAgo(5)), ...fixtureMoves];
+  const leftDone = await call({ format: "json" });
+  assert.equal(leftDone.data.waiting.items.find((w) => w.number === "1.3.1").days, null, "an old move into Done is not used once the card left");
+  movePages = () => fixtureMoves;
+  mockCards = fixtureCards();
+
+  // A story whose work items are all Done is listed when none shows evidence, even if it has
+  // no acceptance criteria at all.
+  mockCards = fixtureCards().map((c) => (c.id === "s13" ? { ...c, desc: "" } : c));
+  const noCriteria = await call({ format: "json" });
+  assert.deepEqual(noCriteria.data.unprovenSignOff.items.map((s) => s.number), ["1.3"]);
+  mockCards = fixtureCards();
+
+  // A card whose parent is missing is in the totals but not a row, and the headline says so.
+  assert.equal(audit.data.missingParent, 0);
+  mockCards = [...fixtureCards(), { id: "o1", name: "9.9.1. Orphan", idList: "L3", attachments: PR }];
+  const orphaned = await call();
+  assert.match(orphaned.data.report, /8 of 11 work items sit in Done; 5 of them show evidence\. The totals include 1 card whose parent is missing, which is not a row of the table\./);
+  mockCards = fixtureCards();
 
   // Nothing waiting: the section says so instead of vanishing.
   mockCards = fixtureCards().map((c) => (["t121", "t131", "t132"].includes(c.id) ? { ...c, attachments: PR } : c));
   const clean = await call();
   assert.match(clean.data.report, /## Done without evidence, longest waiting\nEvery Done card shows evidence\./);
+  assert.equal(reqs("createCard,updateCard:idList,updateCard:dueComplete").length, 0, "no history read when nothing waits");
   mockCards = fixtureCards();
 
   // Card names are shown as text in the markdown lists, not read as formatting.

@@ -38,9 +38,10 @@ async function loadTree(board, doneLists, { criteria = true, extraCardFields = "
   const checklistsByCard = {};
   for (const list of checklists) (checklistsByCard[list.idCard] ??= []).push(list);
 
+  const listNames = Object.fromEntries(lists.map((l) => [l.id, l.name]));
   const tree = buildTree({
     cards,
-    lists: Object.fromEntries(lists.map((l) => [l.id, l.name])),
+    lists: listNames,
     checklists: checklistsByCard,
     isDoneList: doneListTest(doneLists),
   });
@@ -51,7 +52,7 @@ async function loadTree(board, doneLists, { criteria = true, extraCardFields = "
         "findCards to see what the cards are called.",
     );
   }
-  return { name: info.name, tree, cardCount: cards.length, cards, checklistsByCard };
+  return { name: info.name, tree, cardCount: cards.length, cards, checklistsByCard, listNames };
 }
 
 // Board actions of one kind, newest first, in whole pages of Trello's maximum size, each
@@ -97,19 +98,34 @@ async function loadComments(board) {
   return { byCard, truncated };
 }
 
-// When each card's current stay in a Done list began: card id -> ISO date. A card gets there
-// by a move or by being created in a Done list, so both are read. Actions come newest first,
-// so the first one seen for a card that puts it in Done is the one its current stay began
-// with. A card with no such action (Done only by a ticked due date, or history out of reach)
-// has no date.
-async function loadDoneSince(board, doneLists) {
+// When each Done card became Done: card id -> ISO date. A card is Done by sitting in a Done
+// list or by a ticked due date, the same two ways buildTree counts it, so both are read in
+// one paged request. Actions come newest first, so a card's first list action (a move or its
+// creation) is where it sits now: it starts the clock only if that put it in Done. Likewise
+// the newest due-date change counts only if it ticked the date. With both, the earlier one
+// is when the card became Done. A card with neither (history out of reach) has no date.
+async function loadDoneSince(board, doneLists, cards, listNames) {
   const isDoneList = doneListTest(doneLists);
-  const since = new Map();
-  const { truncated } = await loadActions(board, "createCard,updateCard:idList", (action) => {
-    const cardId = action.data?.card?.id;
-    const into = action.type === "createCard" ? action.data?.list?.name : action.data?.listAfter?.name;
-    if (cardId && into && !since.has(cardId) && isDoneList(into)) since.set(cardId, action.date);
+  const intoList = new Map();
+  const ticked = new Map();
+  const { truncated } = await loadActions(board, "createCard,updateCard:idList,updateCard:dueComplete", (action) => {
+    const card = action.data?.card;
+    if (!card?.id) return;
+    if (action.type === "createCard" || action.data?.listAfter) {
+      const into = action.type === "createCard" ? action.data?.list?.name : action.data.listAfter.name;
+      if (!intoList.has(card.id)) intoList.set(card.id, isDoneList(into) ? action.date : null);
+    } else if (action.data?.old && "dueComplete" in action.data.old) {
+      if (!ticked.has(card.id)) ticked.set(card.id, card.dueComplete === true ? action.date : null);
+    }
   });
+  const since = new Map();
+  for (const card of cards) {
+    const dates = [];
+    if (isDoneList(listNames[card.idList])) dates.push(intoList.get(card.id));
+    if (card.dueComplete === true) dates.push(ticked.get(card.id));
+    const known = dates.filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b));
+    if (known.length) since.set(card.id, known[0]);
+  }
   return { since, truncated };
 }
 
@@ -215,7 +231,7 @@ export const TOOLS = {
       "checklist ticked, and a Blocked card names exactly one member and has one sentence (its " +
       "newest comment) saying why; cards that break it are listed. (4) It shows how long " +
       "each Done card without evidence has been waiting, oldest first, counted from the day it " +
-      "moved into a Done list. (5) The rule and the evidence definitions are printed with every " +
+      "became Done (moved into a Done list, created there, or its due date ticked). (5) The rule and the evidence definitions are printed with every " +
       "result, so they cannot drift between runs. " +
       "Evidence means a link or a note is on the card, not that the pull request was merged. " +
       "Read-only: nothing is moved or changed, cards are reported and people are not (no " +
@@ -251,23 +267,30 @@ export const TOOLS = {
       const board = resolveBoard(boardId);
       // Comments come from their own paged request; everything else is the same four reads
       // the status report makes, plus members and attachment links on the cards.
-      const [{ name, tree, cardCount, cards, checklistsByCard }, comments, moves] = await Promise.all([
+      const [{ name, tree, cardCount, cards, checklistsByCard, listNames }, comments] = await Promise.all([
         loadTree(board, doneLists, {
           extraCardFields: "idMembers",
           extraCardParams: { attachments: true, attachment_fields: "url" },
         }),
         loadComments(board),
-        loadDoneSince(board, doneLists),
       ]);
       const now = Date.now();
-      const facts = indexFacts(cards, checklistsByCard, comments.byCard, moves.since);
-      const audit = buildOutcomeAudit(scopeTo(tree, epic), facts, { exemptLabels, now });
+      const roots = scopeTo(tree, epic);
+      const audit = (since) =>
+        buildOutcomeAudit(roots, indexFacts(cards, checklistsByCard, comments.byCard, since), { exemptLabels, now });
+      // The card history is only read when a Done card without evidence needs a waiting time.
+      let result = audit(new Map());
+      let moves = { truncated: false };
+      if (result.waiting.count) {
+        moves = await loadDoneSince(board, doneLists, cards, listNames);
+        result = audit(moves.since);
+      }
       const warnings = {
         ...boardWarnings(tree, cardCount),
         commentsPossiblyTruncated: comments.truncated,
         movesPossiblyTruncated: moves.truncated,
       };
-      if (format === "json") return { boardId: board, board: name, format, ...audit, warnings };
+      if (format === "json") return { boardId: board, board: name, format, ...result, warnings };
       const notes = boardNotes(warnings, cardCount);
       if (warnings.commentsPossiblyTruncated) {
         notes.push(
@@ -276,14 +299,14 @@ export const TOOLS = {
       }
       if (warnings.movesPossiblyTruncated) {
         notes.push(
-          `the board has more card moves than were read (${ACTION_PAGES * ACTION_PAGE}), so some waiting times may be missing.`,
+          `the board has more card moves and due-date changes than were read (${ACTION_PAGES * ACTION_PAGE}), so some waiting times may be missing.`,
         );
       }
       return {
         boardId: board,
         board: name,
         format,
-        report: renderOutcomeAudit(name, audit, { now }) + noteBlock(notes),
+        report: renderOutcomeAudit(name, result, { now }) + noteBlock(notes),
       };
     },
   },
