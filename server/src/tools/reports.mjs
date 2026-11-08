@@ -54,40 +54,63 @@ async function loadTree(board, doneLists, { criteria = true, extraCardFields = "
   return { name: info.name, tree, cardCount: cards.length, cards, checklistsByCard };
 }
 
-// Every comment on the board, grouped by card, in whole pages of Trello's maximum size,
-// newest first, each page continuing `before` the oldest action of the last. Capped, because
-// a board with endless comments must not turn one call into an endless loop; when the cap
-// is hit the caller is told, since a "deployed" comment further back would then be missed.
-const COMMENT_PAGE = 1000;
-const COMMENT_PAGES = 10;
+// Board actions of one kind, newest first, in whole pages of Trello's maximum size, each
+// page continuing `before` the oldest action of the last; `onAction` sees every action.
+// Capped, because a board with endless history must not turn one call into an endless loop;
+// when the cap is hit the caller is told, since a "deployed" comment or a move into Done
+// further back would then be missed.
+const ACTION_PAGE = 1000;
+const ACTION_PAGES = 10;
 
-async function loadComments(board) {
-  const byCard = new Map();
+async function loadActions(board, filter, onAction) {
   let before;
   let firstId;
   for (let pages = 1; ; pages++) {
     const page = await trello("GET", `/boards/${board}/actions`, {
-      filter: "commentCard",
-      limit: COMMENT_PAGE,
+      filter,
+      limit: ACTION_PAGE,
       // No `fields` filter: paging continues from each action's `id`, so it must always be there.
       memberCreator: false,
       before,
     });
     const actions = Array.isArray(page) ? page : [];
     // If Trello ever ignored `before`, every page would be the first one again. Stop and say
-    // the read is incomplete rather than count the same comments ten times.
-    if (before && actions[0]?.id === firstId) return { byCard, truncated: true };
+    // the read is incomplete rather than count the same actions ten times.
+    if (before && actions[0]?.id === firstId) return { truncated: true };
     if (!before) firstId = actions[0]?.id;
-    for (const action of actions) {
-      const cardId = action.data?.card?.id;
-      if (!cardId) continue;
-      if (!byCard.has(cardId)) byCard.set(cardId, []);
-      byCard.get(cardId).push({ text: action.data?.text ?? "", date: action.date });
-    }
-    if (actions.length < COMMENT_PAGE) return { byCard, truncated: false };
-    if (pages >= COMMENT_PAGES) return { byCard, truncated: true };
+    actions.forEach(onAction);
+    if (actions.length < ACTION_PAGE) return { truncated: false };
+    if (pages >= ACTION_PAGES) return { truncated: true };
     before = actions.at(-1).id;
   }
+}
+
+// Every comment on the board, grouped by card.
+async function loadComments(board) {
+  const byCard = new Map();
+  const { truncated } = await loadActions(board, "commentCard", (action) => {
+    const cardId = action.data?.card?.id;
+    if (!cardId) return;
+    if (!byCard.has(cardId)) byCard.set(cardId, []);
+    byCard.get(cardId).push({ text: action.data?.text ?? "", date: action.date });
+  });
+  return { byCard, truncated };
+}
+
+// When each card's current stay in a Done list began: card id -> ISO date. A card gets there
+// by a move or by being created in a Done list, so both are read. Actions come newest first,
+// so the first one seen for a card that puts it in Done is the one its current stay began
+// with. A card with no such action (Done only by a ticked due date, or history out of reach)
+// has no date.
+async function loadDoneSince(board, doneLists) {
+  const isDoneList = doneListTest(doneLists);
+  const since = new Map();
+  const { truncated } = await loadActions(board, "createCard,updateCard:idList", (action) => {
+    const cardId = action.data?.card?.id;
+    const into = action.type === "createCard" ? action.data?.list?.name : action.data?.listAfter?.name;
+    if (cardId && into && !since.has(cardId) && isDoneList(into)) since.set(cardId, action.date);
+  });
+  return { since, truncated };
 }
 
 // What the board says about itself that a reader should know before trusting the numbers.
@@ -182,7 +205,7 @@ export const TOOLS = {
     description:
       "Checks whether work marked Done has evidence behind it, reading only Trello. Works on " +
       "boards that use the numbered hierarchy (EPIC 1 -> 1.1 story -> 1.1.1 task), like " +
-      "getStatusReport. It does four things. (1) Next to the usual percent-done it gives a " +
+      "getStatusReport. It does five things. (1) Next to the usual percent-done it gives a " +
       "second number, done with evidence: a work item counts only if it sits in a Done-style list AND " +
       "its card carries evidence, which is a pull-request link attached, a comment saying it " +
       "was deployed, or a Definition of Done checklist with every item ticked. (2) It lists " +
@@ -190,8 +213,10 @@ export const TOOLS = {
       "where none of those work items shows any evidence. (3) It reads the team rule the same " +
       "way on every call: a Done card has a pull request attached and its acceptance-criteria " +
       "checklist ticked, and a Blocked card names exactly one member and has one sentence (its " +
-      "newest comment) saying why; cards that break it are listed. (4) The rule and the " +
-      "evidence definitions are printed with every result, so they cannot drift between runs. " +
+      "newest comment) saying why; cards that break it are listed. (4) It shows how long " +
+      "each Done card without evidence has been waiting, oldest first, counted from the day it " +
+      "moved into a Done list. (5) The rule and the evidence definitions are printed with every " +
+      "result, so they cannot drift between runs. " +
       "Evidence means a link or a note is on the card, not that the pull request was merged. " +
       "Read-only: nothing is moved or changed, cards are reported and people are not (no " +
       "member names, ids or comment text come back). By default returns { boardId, board, " +
@@ -226,28 +251,39 @@ export const TOOLS = {
       const board = resolveBoard(boardId);
       // Comments come from their own paged request; everything else is the same four reads
       // the status report makes, plus members and attachment links on the cards.
-      const [{ name, tree, cardCount, cards, checklistsByCard }, comments] = await Promise.all([
+      const [{ name, tree, cardCount, cards, checklistsByCard }, comments, moves] = await Promise.all([
         loadTree(board, doneLists, {
           extraCardFields: "idMembers",
           extraCardParams: { attachments: true, attachment_fields: "url" },
         }),
         loadComments(board),
+        loadDoneSince(board, doneLists),
       ]);
-      const facts = indexFacts(cards, checklistsByCard, comments.byCard);
-      const audit = buildOutcomeAudit(scopeTo(tree, epic), facts, { exemptLabels });
-      const warnings = { ...boardWarnings(tree, cardCount), commentsPossiblyTruncated: comments.truncated };
+      const now = Date.now();
+      const facts = indexFacts(cards, checklistsByCard, comments.byCard, moves.since);
+      const audit = buildOutcomeAudit(scopeTo(tree, epic), facts, { exemptLabels, now });
+      const warnings = {
+        ...boardWarnings(tree, cardCount),
+        commentsPossiblyTruncated: comments.truncated,
+        movesPossiblyTruncated: moves.truncated,
+      };
       if (format === "json") return { boardId: board, board: name, format, ...audit, warnings };
       const notes = boardNotes(warnings, cardCount);
       if (warnings.commentsPossiblyTruncated) {
         notes.push(
-          `the board has more comments than were read (${COMMENT_PAGES * COMMENT_PAGE}), so a "deployed" comment or a Blocked reason further back may be missed; the numbers above may be incomplete.`,
+          `the board has more comments than were read (${ACTION_PAGES * ACTION_PAGE}), so a "deployed" comment or a Blocked reason further back may be missed; the numbers above may be incomplete.`,
+        );
+      }
+      if (warnings.movesPossiblyTruncated) {
+        notes.push(
+          `the board has more card moves than were read (${ACTION_PAGES * ACTION_PAGE}), so some waiting times may be missing.`,
         );
       }
       return {
         boardId: board,
         board: name,
         format,
-        report: renderOutcomeAudit(name, audit) + noteBlock(notes),
+        report: renderOutcomeAudit(name, audit, { now }) + noteBlock(notes),
       };
     },
   },

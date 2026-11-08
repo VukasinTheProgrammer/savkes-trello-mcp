@@ -1620,8 +1620,24 @@ assert.equal(sawSignal.aborted, false);
     comment("a0", "t213", "Waiting on the vendor.", "2026-10-31T10:00:00.000Z"),
   ];
 
+  // Moves and creations, newest first, as Trello returns them. Only putting a card in a Done
+  // list starts the clock, and the newest one wins: t131 was Done 20 days ago, went back to
+  // Doing, and has been Done again for 9 days. t132 was created straight into Done.
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000 - 3600000).toISOString();
+  const move = (id, card, to, date) => ({ id, type: "updateCard", date, data: { card: { id: card }, listAfter: { id: "x", name: to } } });
+  const created = (id, card, inList, date) => ({ id, type: "createCard", date, data: { card: { id: card }, list: { id: "x", name: inList } } });
+  const fixtureMoves = [
+    move("m4", "t211", "Doing", daysAgo(2)),
+    move("m3", "t121", "Done", daysAgo(3)),
+    move("m2", "t131", "Done", daysAgo(9)),
+    move("m1", "t131", "Doing", daysAgo(15)),
+    move("m0", "t131", "Done", daysAgo(20)),
+    created("c1", "t132", "Done", daysAgo(12)),
+  ];
+
   // Over the real dispatch path with a mocked board, recording every request.
   let actionPages = () => fixtureComments;
+  let movePages = () => fixtureMoves;
   let mockCards = fixtureCards();
   const sent = [];
   globalThis.fetch = async (url, opts = {}) => {
@@ -1632,12 +1648,16 @@ assert.equal(sawSignal.aborted, false);
       "/1/boards/BX/lists": () => Object.entries(lists).map(([id, name]) => ({ id, name })),
       "/1/boards/BX/cards": () => mockCards,
       "/1/boards/BX/checklists": () => fixtureChecklists,
-      "/1/boards/BX/actions": () => actionPages(Object.fromEntries(u.searchParams)),
+      "/1/boards/BX/actions": () => {
+        const params = Object.fromEntries(u.searchParams);
+        return params.filter === "commentCard" ? actionPages(params) : movePages(params);
+      },
     };
     return u.pathname in bodies
       ? new Response(JSON.stringify(bodies[u.pathname]()), { status: 200 })
       : new Response(`not mocked: ${u.pathname}`, { status: 404, statusText: "Not Found" });
   };
+  const reqs = (filter) => sent.filter((r) => r.path.endsWith("/actions") && r.params.filter === filter);
   const call = async (args = {}) => {
     sent.length = 0;
     const r = await handle({ id: 9, method: "tools/call", params: { name: "getOutcomeAudit", arguments: { boardId: "BX", ...args } } });
@@ -1676,7 +1696,24 @@ assert.equal(sawSignal.aborted, false);
   });
   assert.deepEqual(audit.data.rule, TEAM_RULE);
   assert.deepEqual(audit.data.evidence, EVIDENCE);
-  assert.deepEqual(audit.data.warnings, { duplicateNumbers: 0, orphans: 0, possiblyTruncated: false, commentsPossiblyTruncated: false });
+  assert.deepEqual(audit.data.warnings, {
+    duplicateNumbers: 0,
+    orphans: 0,
+    possiblyTruncated: false,
+    commentsPossiblyTruncated: false,
+    movesPossiblyTruncated: false,
+  });
+
+  // Done cards with nothing to show for it, longest waiting first. The clock starts when the
+  // card was last put in a Done list, by a move or by being created there.
+  assert.deepEqual(audit.data.waiting, {
+    count: 3,
+    items: [
+      { number: "1.3.2", name: "1.3.2. Bio", days: 12 },
+      { number: "1.3.1", name: "1.3.1. Avatar", days: 9 },
+      { number: "1.2.1", name: "1.2.1. Email", days: 3 },
+    ],
+  });
 
   // Read-only on the wire: only GETs, and the comment/attachment/member fields it needs.
   assert.equal(sent.every((r) => r.method === "GET"), true, "getOutcomeAudit must only read");
@@ -1688,7 +1725,10 @@ assert.equal(sawSignal.aborted, false);
   assert.equal(cardsReq.attachments, "true");
   assert.equal(cardsReq.attachment_fields, "url");
   assert.match(cardsReq.fields, /\bidMembers\b/);
-  assert.equal(sent.find((r) => r.path.endsWith("/actions")).params.filter, "commentCard");
+  assert.deepEqual(
+    [...new Set(sent.filter((r) => r.path.endsWith("/actions")).map((r) => r.params.filter))].sort(),
+    ["commentCard", "createCard,updateCard:idList"],
+  );
   assert.equal(sent.find((r) => r.path.endsWith("/checklists")).params.checkItem_fields, "name,state");
 
   // Nothing a person wrote and nobody's id comes back: counts and card names only.
@@ -1704,6 +1744,10 @@ assert.equal(sawSignal.aborted, false);
   assert.match(md.data.report, /\*\*70% in Done\. 40% with evidence\.\*\*/);
   assert.match(md.data.report, /7 of 10 work items sit in Done; 4 of them show evidence\./);
   assert.match(md.data.report, /## Sign-off without evidence\n- \*\*1\.3\. Profile\*\*: all 2 work items are Done, none shows evidence/);
+  assert.match(
+    md.data.report,
+    /## Done without evidence, longest waiting\n- \*\*1\.3\.2\. Bio\*\*: 12 days in Done\n- \*\*1\.3\.1\. Avatar\*\*: 9 days in Done\n- \*\*1\.2\.1\. Email\*\*: 3 days in Done/,
+  );
   assert.match(md.data.report, /Done without a pull request \(5\)/);
   assert.match(md.data.report, /Done with acceptance criteria not ticked \(1\):\*\* 2\.2\.1\. Old reports, 1 open/);
   assert.match(md.data.report, /Blocked without exactly one member and one sentence \(2\):\*\* 2\.1\.2\. PDF \(no member, no reason\)/);
@@ -1747,7 +1791,7 @@ assert.equal(sawSignal.aborted, false);
   actionPages = ({ before }) =>
     before ? [...fixtureComments, comment("old", "t121", "Deployed on Tuesday.", "2026-09-01T00:00:00.000Z")] : filler(0);
   const paged = await call({ format: "json" });
-  const actionReqs = sent.filter((r) => r.path.endsWith("/actions"));
+  const actionReqs = reqs("commentCard");
   assert.equal(actionReqs.length, 2);
   assert.equal(actionReqs[0].params.before, undefined);
   assert.equal(actionReqs[1].params.before, "p0-999");
@@ -1758,16 +1802,34 @@ assert.equal(sawSignal.aborted, false);
   // instead of looping or claiming certainty.
   actionPages = ({ before }) => filler(before ? Number(before.slice(1).split("-")[0]) + 1 : 0);
   const endless = await call();
-  assert.equal(sent.filter((r) => r.path.endsWith("/actions")).length, 10);
+  assert.equal(reqs("commentCard").length, 10);
   assert.match(endless.data.report, /_Note: .*comments.*may be incomplete/);
 
   // If Trello ignored `before` and served the first page again, the read stops at once and
   // says it is incomplete, instead of counting the same comments ten times.
   actionPages = () => filler(0);
   const repeated = await call({ format: "json" });
-  assert.equal(sent.filter((r) => r.path.endsWith("/actions")).length, 2);
+  assert.equal(reqs("commentCard").length, 2);
   assert.equal(repeated.data.warnings.commentsPossiblyTruncated, true);
   actionPages = () => fixtureComments;
+
+  // The same guard for card moves: a repeated first page stops the read and is reported, and
+  // the waiting times that could not be read come back without an age instead of a wrong one.
+  movePages = () => Array.from({ length: 1000 }, (_, i) => move(`q${i}`, "nobody", "Backlog", daysAgo(1)));
+  const movesRepeated = await call({ format: "json" });
+  assert.equal(reqs("createCard,updateCard:idList").length, 2);
+  assert.equal(movesRepeated.data.warnings.movesPossiblyTruncated, true);
+  assert.equal(movesRepeated.data.waiting.items.every((w) => w.days === null), true);
+  const movesNote = await call();
+  assert.match(movesNote.data.report, /_Note: .*card moves.*waiting times may be missing/);
+  assert.match(movesNote.data.report, /\*\*1\.2\.1\. Email\*\*: no move into Done found/);
+  movePages = () => fixtureMoves;
+
+  // Nothing waiting: the section says so instead of vanishing.
+  mockCards = fixtureCards().map((c) => (["t121", "t131", "t132"].includes(c.id) ? { ...c, attachments: PR } : c));
+  const clean = await call();
+  assert.match(clean.data.report, /## Done without evidence, longest waiting\nEvery Done card shows evidence\./);
+  mockCards = fixtureCards();
 
   // Card names are shown as text in the markdown lists, not read as formatting.
   mockCards = fixtureCards().map((c) => (c.id === "t132" ? { ...c, name: "1.3.2. *Bio* [draft]" } : c));

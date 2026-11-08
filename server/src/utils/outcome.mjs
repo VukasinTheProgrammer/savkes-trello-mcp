@@ -113,7 +113,7 @@ export function isOneSentence(text) {
 // The facts the audit uses, per card. `comments` is [{ text, date }]. The newest one is
 // the Blocked reason; the newest one about the deploy decides the "deployed" proof. The text itself stays
 // here: nothing downstream receives a comment, only what was concluded from it.
-export function readCardFacts(card, checklists = [], comments = []) {
+export function readCardFacts(card, checklists = [], comments = [], doneSince = null) {
   const newest = comments.reduce((a, c) => (!a || Date.parse(c.date) > Date.parse(a.date) ? c : a), null);
   return {
     pullRequest: hasPullRequest(card.attachments),
@@ -121,6 +121,8 @@ export function readCardFacts(card, checklists = [], comments = []) {
     definitionOfDone: hasTickedDod(checklists),
     members: (card.idMembers ?? []).length,
     newestComment: newest?.text ?? null,
+    // When the card last moved into a Done list; null if it never did (or the history was not read).
+    doneSince: doneSince ?? null,
     // Label names only ever leave this file as a yes/no ("is exempt"), never as text.
     labels: (card.labels ?? []).map((l) => String(l?.name ?? "").trim().toLowerCase()).filter(Boolean),
   };
@@ -128,16 +130,17 @@ export function readCardFacts(card, checklists = [], comments = []) {
 
 // number -> facts. Of two cards that share a number the first is read, the same one
 // buildTree keeps, so the audit and the status report always look at the same card.
-export function indexFacts(cards, checklistsByCard = {}, commentsByCard = new Map()) {
+export function indexFacts(cards, checklistsByCard = {}, commentsByCard = new Map(), doneSinceByCard = new Map()) {
   const facts = new Map();
   for (const card of cards) {
     const number = cardNumber(card.name);
     if (number === null || facts.has(number)) continue;
-    facts.set(number, readCardFacts(card, checklistsByCard[card.id], commentsByCard.get(card.id)));
+    facts.set(number, readCardFacts(card, checklistsByCard[card.id], commentsByCard.get(card.id), doneSinceByCard.get(card.id)));
   }
   return facts;
 }
 
+const DAY = 24 * 60 * 60 * 1000;
 const hasEvidence = (f) => Boolean(f && (f.pullRequest || f.deployedComment || f.definitionOfDone));
 
 // --- The audit ----------------------------------------------------------------
@@ -145,7 +148,7 @@ const hasEvidence = (f) => Boolean(f && (f.pullRequest || f.deployedComment || f
 // `roots` as scopeTo returns them; `facts` as indexFacts returns them. `exemptLabels` names
 // the kinds of work that never have a pull request (design, docs, meetings): a Done card
 // carrying one is not listed for the missing pull request. Its other evidence still counts.
-export function buildOutcomeAudit(roots, facts, { exemptLabels = [] } = {}) {
+export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.now() } = {}) {
   const factsOf = (node) => facts.get(node.number);
   const exempt = new Set(exemptLabels.map((l) => String(l).trim().toLowerCase()).filter(Boolean));
   const isExempt = (f) => Boolean(f?.labels?.some((l) => exempt.has(l)));
@@ -178,6 +181,7 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [] } = {}) {
   const blockedIncomplete = [];
   const unprovenSignOff = [];
   const blockedButDone = [];
+  const waiting = [];
 
   walk(roots, (node) => {
     const isLeaf = node.children.length === 0;
@@ -194,6 +198,11 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [] } = {}) {
     if (isLeaf && node.isDone && !f?.pullRequest && !isExempt(f)) noPullRequest.push({ number: node.number, name: node.name });
     // Done by its ticked due date (or Done list) and Blocked at the same time: one of the two
     // is out of date. Said out loud, not resolved, because the status report counts it as Done.
+    // Done, but nothing on the card shows it: how long has it been like that?
+    if (isLeaf && node.isDone && !hasEvidence(f)) {
+      const since = Date.parse(f?.doneSince);
+      waiting.push({ number: node.number, name: node.name, days: Number.isNaN(since) ? null : Math.max(0, Math.floor((now - since) / DAY)) });
+    }
     if (isLeaf && node.isDone && node.blocked) blockedButDone.push({ number: node.number, name: node.name });
     if (finished && node.criteriaOpen > 0) {
       openCriteria.push({ number: node.number, name: node.name, open: node.criteriaOpen });
@@ -227,6 +236,8 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [] } = {}) {
       provenPercent: percentOf(provenBy.get(root.number), root.total),
     })),
     unprovenSignOff: cap(unprovenSignOff),
+    // Longest waiting first; cards with no known move into Done come last.
+    waiting: cap(waiting.sort((a, b) => (b.days ?? -1) - (a.days ?? -1))),
     ruleBreaks: {
       doneWithoutPullRequest: cap(noPullRequest),
       doneWithOpenCriteria: cap(openCriteria),
@@ -242,7 +253,7 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [] } = {}) {
 // --- The write-up -------------------------------------------------------------
 
 export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) {
-  const { progress, provenDone, items, unprovenSignOff, ruleBreaks, inconsistent, exemptLabels, rule, evidence } = audit;
+  const { progress, provenDone, items, unprovenSignOff, waiting, ruleBreaks, inconsistent, exemptLabels, rule, evidence } = audit;
   const out = [`# Outcome audit: ${boardName}`, `_${new Date(now).toISOString().slice(0, 10)}_`, ""];
 
   const sit = progress.total === 1 ? "item sits" : "items sit";
@@ -271,6 +282,19 @@ export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) 
     if (unprovenSignOff.count > unprovenSignOff.items.length) out.push(`- …${more(unprovenSignOff).trim()}`);
   } else {
     out.push("No story is waiting for sign-off without evidence.");
+  }
+  out.push("");
+
+  out.push("## Done without evidence, longest waiting");
+  if (waiting.count) {
+    out.push(
+      ...waiting.items.map(
+        (w) => `- **${mdText(w.name)}**: ` + (w.days === null ? "no move into Done found" : w.days === 0 ? "moved to Done today" : `${w.days} ${w.days === 1 ? "day" : "days"} in Done`),
+      ),
+    );
+    if (waiting.count > waiting.items.length) out.push(`- …${more(waiting).trim()}`);
+  } else {
+    out.push("Every Done card shows evidence.");
   }
   out.push("");
 
