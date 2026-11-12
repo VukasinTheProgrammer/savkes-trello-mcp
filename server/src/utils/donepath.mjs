@@ -129,8 +129,8 @@ export function renderDonePathAudit(boardName, audit, { now = Date.now() } = {})
   if (skipped.both.count) {
     out.push(`- ${skipped.both.count} skipped both: ${skipped.both.items.map((c) => mdText(c.name)).join("; ")}${more(skipped.both)}.`);
   }
-  if (createdInDone) out.push(`- ${createdInDone} were created straight in Done (written down afterwards), so no stage is counted as skipped.`);
-  if (noHistory) out.push(`- ${noHistory} have no history to read and are not judged.`);
+  if (createdInDone) out.push(`- ${createdInDone} ${createdInDone === 1 ? "was" : "were"} created straight in Done (written down afterwards), so no stage is counted as skipped.`);
+  if (noHistory) out.push(`- ${noHistory} ${noHistory === 1 ? "has" : "have"} no history to read and ${noHistory === 1 ? "is" : "are"} not judged.`);
   out.push("");
 
   out.push("## Batches");

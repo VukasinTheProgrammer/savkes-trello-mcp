@@ -2015,6 +2015,9 @@ assert.equal(sawSignal.aborted, false);
   assert.match(md, /1 batch of 5 or more/);
   assert.match(md, /1\.1\.2\\?\. Straight to Done/);
   assert.match(md, /not a verdict/i);
+  // One card, not "1 were": the singular reads as a sentence.
+  assert.match(md, /- 1 was created straight in Done/);
+  assert.match(md, /- 1 has no history to read/);
 }
 
 // The tool over the real dispatch path with a mocked board. All data is invented.
