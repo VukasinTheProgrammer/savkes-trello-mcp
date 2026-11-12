@@ -2118,7 +2118,7 @@ assert.equal(sawSignal.aborted, false);
     undefined,
   ]) assert.equal(parseGitHubPr(url), null, String(url));
 
-  const TOKEN = "ghp_TESTTOKEN123";
+  const TOKEN = "fake-token-123";
   const asked = [];
   const answers = {
     "/repos/acme/web/pulls/1": [200, { merged: true, state: "closed" }],
@@ -2180,7 +2180,7 @@ assert.equal(sawSignal.aborted, false);
 // getOutcomeAudit with verifyPullRequests: the linked pull requests of Done cards, asked of GitHub.
 // Trello and GitHub are both mocked. All data below is invented.
 {
-  const TOKEN = "ghp_TESTTOKEN456";
+  const TOKEN = "fake-token-456";
   const AC = "- **Given** a user\n  **When** they act\n  **Then** it works";
   const pr = (n) => [{ url: `https://github.com/acme/web/pull/${n}` }];
   const boardCards = [
