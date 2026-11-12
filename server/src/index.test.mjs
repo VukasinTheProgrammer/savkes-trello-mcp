@@ -33,6 +33,7 @@ import {
   renderOutcomeAudit,
 } from "./utils/outcome.mjs";
 import { buildDonePathAudit, renderDonePathAudit } from "./utils/donepath.mjs";
+import { checkPullRequests, parseGitHubPr } from "./utils/github.mjs";
 import {
   buildReport,
   buildTree,
@@ -2092,6 +2093,87 @@ assert.equal(sawSignal.aborted, false);
   assert.match(unknownArg.text, /Unknown argument for getDonePathAudit: staleDays/);
   const badFormat = await call({ format: "csv" });
   assert.equal(badFormat.isError, true);
+}
+
+// ---------------------------------------------------------------------------
+// GitHub pull-request check: parsing a link, and asking GitHub whether it was merged.
+// Nothing here touches the network; fetch is injected. All data below is invented.
+{
+  assert.deepEqual(parseGitHubPr("https://github.com/acme/web/pull/42"), { owner: "acme", repo: "web", number: 42 });
+  assert.deepEqual(parseGitHubPr("https://github.com/acme/web.js/pull/7/files?diff=split#r1"), { owner: "acme", repo: "web.js", number: 7 });
+  assert.deepEqual(parseGitHubPr("https://www.github.com/acme/web/pull/42/"), { owner: "acme", repo: "web", number: 42 });
+  for (const url of [
+    "https://github.com/acme/web/issues/42",
+    "https://github.com/acme/web/pull/",
+    "https://github.com/acme/web/pull/x",
+    "https://github.com/acme/web/pulls",
+    "http://github.com/acme/web/pull/42",
+    "https://github.com.evil.test/acme/web/pull/42",
+    "https://evil.test/github.com/acme/web/pull/42",
+    "https://user@github.com/acme/web/pull/42",
+    "https://github.com/../web/pull/42",
+    "https://github.com/acme/../pull/42",
+    "https://gitlab.com/acme/group/web/-/merge_requests/7",
+    "not a url",
+    undefined,
+  ]) assert.equal(parseGitHubPr(url), null, String(url));
+
+  const TOKEN = "ghp_TESTTOKEN123";
+  const asked = [];
+  const answers = {
+    "/repos/acme/web/pulls/1": [200, { merged: true, state: "closed" }],
+    "/repos/acme/web/pulls/2": [200, { merged: false, state: "open" }],
+    "/repos/acme/web/pulls/3": [200, { merged: false, state: "closed" }],
+    "/repos/acme/web/pulls/4": [404, { message: "Not Found" }],
+    "/repos/acme/web/pulls/5": [403, { message: "Forbidden" }],
+    "/repos/acme/web/pulls/7": [429, { message: "rate limit exceeded" }],
+    "/repos/acme/web/pulls/8": [502, { message: "Bad Gateway" }],
+  };
+  const fakeFetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    asked.push({ host: u.host, path: u.pathname, method: opts.method ?? "GET", headers: opts.headers });
+    if (u.pathname.endsWith("/pulls/6")) throw new Error(`network down for ${TOKEN}`);
+    const [status, body] = answers[u.pathname];
+    return new Response(JSON.stringify(body), { status });
+  };
+  const prs = [1, 2, 3, 4, 5, 6, 7, 8, 1].map((number) => ({ owner: "acme", repo: "web", number }));
+  const out = await checkPullRequests(prs, { token: TOKEN, fetchImpl: fakeFetch });
+  assert.deepEqual(
+    [...out.results].map(([k, v]) => [k, v.state, v.reason ?? null, v.category ?? null, v.retryable ?? null]),
+    [
+      ["acme/web#1", "merged", null, null, null],
+      ["acme/web#2", "open", null, null, null],
+      ["acme/web#3", "closed", null, null, null],
+      ["acme/web#4", "unverified", "not found or no access", "permission", false],
+      ["acme/web#5", "unverified", "refused by GitHub", "permission", false],
+      ["acme/web#6", "unverified", "could not reach GitHub", "transient", true],
+      ["acme/web#7", "unverified", "rate limited", "transient", true],
+      ["acme/web#8", "unverified", "GitHub error", "transient", true],
+    ],
+  );
+  assert.equal(out.notChecked, 0);
+  // A repeated link is asked about once; only api.github.com is called, read-only, with the token as a bearer header.
+  assert.equal(asked.length, 8);
+  assert.equal(asked.every((a) => a.host === "api.github.com" && a.method === "GET"), true);
+  assert.equal(asked[0].headers.Authorization, `Bearer ${TOKEN}`);
+  assert.equal(asked[0].headers.Accept, "application/vnd.github+json");
+  // The token is never part of what comes back, not even when a failure message carried it.
+  assert.equal(JSON.stringify([...out.results]).includes(TOKEN), false);
+
+  // More links than the limit: the rest are counted, not asked about.
+  asked.length = 0;
+  const limited = await checkPullRequests(prs.slice(0, 3), { token: TOKEN, fetchImpl: fakeFetch, limit: 2 });
+  assert.equal(limited.results.size, 2);
+  assert.equal(limited.notChecked, 1);
+  assert.equal(asked.length, 2);
+
+  // A request that never answers is cut off and reported, not waited for.
+  const hang = (url, opts) => new Promise((_, reject) => opts.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+  const slow = await checkPullRequests([prs[0]], { token: TOKEN, fetchImpl: hang, timeoutMs: 20 });
+  assert.equal(slow.results.get("acme/web#1").state, "unverified");
+  assert.equal(slow.results.get("acme/web#1").reason, "could not reach GitHub");
+
+  await assert.rejects(() => checkPullRequests(prs, { token: "", fetchImpl: fakeFetch }), /token is required/);
 }
 
 globalThis.fetch = realFetch;
