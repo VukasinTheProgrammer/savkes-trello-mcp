@@ -218,11 +218,11 @@ assert.deepEqual(spreadPositions(2000, 1000, 2), [3024, 4048]);
 // tight on its own. Only <= 0 is unusable.
 assert.deepEqual(spreadPositions(1000, 1001, 3), [1000.25, 1000.5, 1000.75]);
 
-// 16 ported from mcp-trello + 9 from the wrapper + 9 added since + 3 report tools = 37. A name
+// 16 ported from mcp-trello + 9 from the wrapper + 9 added since + 4 report tools = 38. A name
 // collision between the halves would silently drop a tool, so the count is asserted
 // alongside the names. This is the only place the total is written down.
 const list = await handle({ id: 1, method: "tools/list" });
-assert.equal(list.tools.length, 37);
+assert.equal(list.tools.length, 38);
 assert.deepEqual(
   list.tools.map((t) => t.name).sort(),
   [
@@ -246,6 +246,7 @@ assert.deepEqual(
     "getCard",
     "getCardChecklists",
     "getCardsByList",
+    "getDonePathAudit",
     "getLabels",
     "getLists",
     "getMyBoards",
@@ -2013,6 +2014,84 @@ assert.equal(sawSignal.aborted, false);
   assert.match(md, /1 batch of 5 or more/);
   assert.match(md, /1\.1\.2\\?\. Straight to Done/);
   assert.match(md, /not a verdict/i);
+}
+
+// The tool over the real dispatch path with a mocked board. All data is invented.
+{
+  const lists = [{ id: "l1", name: "Backlog" }, { id: "l2", name: "In Progress" }, { id: "l3", name: "Testing/Review" }, { id: "l4", name: "Done" }];
+  const boardCards = [
+    { id: "x", name: "1.1.1. Full path", idList: "l4", idMembers: ["m1"] },
+    { id: "y", name: "1.1.2. Straight to Done", idList: "l4", idMembers: ["m9"] },
+    { id: "z", name: "1.1.3. Still open", idList: "l2", idMembers: [] },
+  ];
+  const act = (id, date, before, after, by) => ({
+    id: `a${date}${id}`, type: "updateCard", date, idMemberCreator: by,
+    data: { card: { id }, listBefore: { name: before }, listAfter: { name: after } },
+  });
+  const made = (id, date, list, by) => ({ id: `c${id}`, type: "createCard", date, idMemberCreator: by, data: { card: { id }, list: { name: list } } });
+  // Newest first, the way Trello returns them.
+  const history = [
+    act("y", "2026-10-01T11:00:00Z", "Backlog", "Done", "m2"),
+    act("x", "2026-10-01T10:30:00Z", "Testing/Review", "Done", "m1"),
+    act("x", "2026-10-01T10:00:00Z", "In Progress", "Testing/Review", "m1"),
+    act("x", "2026-10-01T09:30:00Z", "Backlog", "In Progress", "m1"),
+    made("z", "2026-10-01T09:20:00Z", "Backlog", "m1"),
+    made("y", "2026-10-01T09:10:00Z", "Backlog", "m2"),
+    made("x", "2026-10-01T09:00:00Z", "Backlog", "m1"),
+  ];
+  const sent = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    sent.push({ method: opts.method ?? "GET", path: u.pathname, params: Object.fromEntries(u.searchParams) });
+    const bodies = {
+      "/1/boards/BX": () => ({ name: "Acme delivery" }),
+      "/1/boards/BX/lists": () => lists,
+      "/1/boards/BX/cards": () => boardCards,
+      "/1/boards/BX/actions": () => (u.searchParams.get("before") ? [] : history),
+    };
+    return u.pathname in bodies
+      ? new Response(JSON.stringify(bodies[u.pathname]()), { status: 200 })
+      : new Response(`not mocked: ${u.pathname}`, { status: 404, statusText: "Not Found" });
+  };
+  const call = async (args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 9, method: "tools/call", params: { name: "getDonePathAudit", arguments: { boardId: "BX", ...args } } });
+    return { ...r, text: r.content[0].text, data: r.isError ? null : JSON.parse(r.content[0].text) };
+  };
+
+  const json = await call({ format: "json" });
+  assert.notEqual(json.isError, true, json.text);
+  assert.equal(json.data.board, "Acme delivery");
+  assert.equal(json.data.doneCards, 2);
+  assert.deepEqual(json.data.skipped, { progress: 1, review: 1, both: { count: 1, items: [{ name: "1.1.2. Straight to Done" }] } });
+  assert.deepEqual(json.data.bursts, { count: 0, cards: 0, largest: 0, percent: 0 });
+  // x was moved by its own member, y by someone who is not on the card.
+  assert.deepEqual(json.data.movedByAssignee, { count: 1, of: 2 });
+  assert.deepEqual(json.data.warnings, { movesPossiblyTruncated: false });
+  // No member id anywhere in what comes back.
+  assert.equal(/\bm[0-9]\b/.test(json.text), false);
+
+  // Read-only on the wire, and only the four reads it needs, with no descriptions or checklists.
+  assert.equal(sent.every((r) => r.method === "GET"), true, "getDonePathAudit must only read");
+  assert.deepEqual([...new Set(sent.map((r) => r.path))].sort(), ["/1/boards/BX", "/1/boards/BX/actions", "/1/boards/BX/cards", "/1/boards/BX/lists"]);
+  assert.equal(sent.find((r) => r.path.endsWith("/actions")).params.filter, "createCard,updateCard:idList");
+  assert.equal(/desc/.test(sent.find((r) => r.path.endsWith("/cards")).params.fields), false);
+
+  const md = await call();
+  assert.match(JSON.parse(md.text).report, /^# Done-path audit: Acme delivery/);
+
+  // Custom list names reach the audit: with "Testing/Review" no longer a review list, x skips review too.
+  const custom = await call({ format: "json", reviewLists: ["Sign-off"] });
+  assert.equal(custom.data.skipped.review, 2);
+
+  const bad = await call({ burstSize: 1 });
+  assert.equal(bad.isError, true);
+  assert.match(bad.text, /burstSize must be a whole number of 2 or more/);
+  const unknownArg = await call({ staleDays: 7 });
+  assert.equal(unknownArg.isError, true);
+  assert.match(unknownArg.text, /Unknown argument for getDonePathAudit: staleDays/);
+  const badFormat = await call({ format: "csv" });
+  assert.equal(badFormat.isError, true);
 }
 
 globalThis.fetch = realFetch;

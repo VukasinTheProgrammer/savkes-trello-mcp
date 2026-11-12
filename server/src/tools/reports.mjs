@@ -3,6 +3,7 @@
 // fetches the board and maps tool arguments onto it.
 
 import { resolveBoard, trello } from "../trello/client.mjs";
+import { buildDonePathAudit, renderDonePathAudit } from "../utils/donepath.mjs";
 import { buildOutcomeAudit, indexFacts, renderOutcomeAudit } from "../utils/outcome.mjs";
 import {
   buildReport,
@@ -127,6 +128,21 @@ async function loadDoneSince(board, doneLists, cards, listNames) {
     if (known.length) since.set(card.id, known[0]);
   }
   return { since, truncated };
+}
+
+// Every list move and creation on the board, as the done-path audit reads them. The mover is
+// the member id Trello puts on each action; it is compared inside the audit and never returned.
+async function loadListMoves(board) {
+  const events = [];
+  const { truncated } = await loadActions(board, "createCard,updateCard:idList", (action) => {
+    const cardId = action.data?.card?.id;
+    if (!cardId) return;
+    const created = action.type === "createCard";
+    const to = created ? action.data?.list?.name : action.data?.listAfter?.name;
+    if (!to) return;
+    events.push({ cardId, at: action.date, from: created ? null : (action.data?.listBefore?.name ?? null), to, by: action.idMemberCreator ?? null });
+  });
+  return { events, truncated };
 }
 
 // What the board says about itself that a reader should know before trusting the numbers.
@@ -307,6 +323,78 @@ export const TOOLS = {
         board: name,
         format,
         report: renderOutcomeAudit(name, result, { now }) + noteBlock(notes),
+      };
+    },
+  },
+
+  // Reads the card history, not the numbering, so it works on any board.
+  getDonePathAudit: {
+    description:
+      "Shows how the cards in Done got there, from the card history. Counts the Done cards that " +
+      "never sat in a progress list or a review list, those created straight in Done (written " +
+      "down afterwards, so not counted as skipping), batches of 5 or more cards moved into Done " +
+      "by one member within 5 minutes, and moves made by a current member of the card. A list " +
+      "of cards worth a look, not a verdict: no member is named, only counts and card names come " +
+      "back. Read-only. Returns { boardId, board, format, report } with report as markdown; with " +
+      "format \"json\" it returns the same numbers as fields. boardId defaults to TRELLO_BOARD_ID.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        boardId: boardProp,
+        format: { type: "string", description: '"markdown" (default) or "json"' },
+        doneLists: {
+          type: "array",
+          items: { type: "string" },
+          description: "Exact names of the lists that hold finished work. Default: Done, Completed, Shipped, Released, Closed",
+        },
+        progressLists: {
+          type: "array",
+          items: { type: "string" },
+          description: 'Exact names of the lists where work is under way. Default: ["In Progress"]',
+        },
+        reviewLists: {
+          type: "array",
+          items: { type: "string" },
+          description: 'Exact names of the lists where work is reviewed or tested. Default: ["Testing/Review", "Testing", "Review", "QA"]',
+        },
+        burstSize: {
+          type: "number",
+          description: "How many cards moved into Done together make a batch (default: 5)",
+        },
+      },
+    },
+    async run({ boardId, format = "markdown", doneLists, progressLists, reviewLists, burstSize = 5 } = {}) {
+      oneOf("format", format, ["markdown", "json"]);
+      if (!Number.isInteger(burstSize) || burstSize < 2) {
+        throw new Error(`burstSize must be a whole number of 2 or more, got ${burstSize}`);
+      }
+      const board = resolveBoard(boardId);
+      const [info, lists, cards, moves] = await Promise.all([
+        trello("GET", `/boards/${board}`, { fields: "name" }),
+        trello("GET", `/boards/${board}/lists`, { fields: "name", filter: "all" }),
+        trello("GET", `/boards/${board}/cards`, { fields: "name,idList,idMembers" }),
+        loadListMoves(board),
+      ]);
+      const listNames = Object.fromEntries(lists.map((l) => [l.id, l.name]));
+      const audit = buildDonePathAudit({
+        cards: cards.map((c) => ({ id: c.id, name: c.name, listName: listNames[c.idList], idMembers: c.idMembers })),
+        events: moves.events,
+        doneLists,
+        progressLists,
+        reviewLists,
+        burstSize,
+      });
+      const warnings = { movesPossiblyTruncated: moves.truncated };
+      if (format === "json") return { boardId: board, board: info.name, format, ...audit, warnings };
+      const notes = moves.truncated
+        ? [`the board has more card moves than were read (${ACTION_PAGES * ACTION_PAGE}), so some cards may look as if they skipped a stage.`]
+        : [];
+      return {
+        boardId: board,
+        board: info.name,
+        format,
+        report: renderDonePathAudit(info.name, audit) + noteBlock(notes),
       };
     },
   },
