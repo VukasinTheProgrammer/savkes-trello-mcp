@@ -271,7 +271,34 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.
 
 // --- The write-up -------------------------------------------------------------
 
-export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) {
+// The GitHub part of the write-up, from summarizeVerification (utils/github.mjs), or the plain
+// statement that it was asked for and could not run. Counts and card names only.
+function renderVerification(v) {
+  if (!v.enabled) return [`Not checked: ${v.reason}.`];
+  const { merged, open, closed, unverified, notChecked } = v.pullRequests;
+  const total = merged + open + closed + unverified + notChecked;
+  const lines = [
+    `${merged} of ${total} linked pull ${total === 1 ? "request is" : "requests are"} merged, according to GitHub. ` +
+      `${open} open, ${closed} closed without a merge, ${unverified} could not be verified${notChecked ? `, ${notChecked} not asked about (over the limit)` : ""}.`,
+  ];
+  const { withGitHubPr, noneMerged } = v.cards;
+  const shown = { open: "open", closed: "closed, not merged", unverified: "could not verify" };
+  if (noneMerged.count) {
+    lines.push(
+      `- None merged on ${noneMerged.count} ${noneMerged.count === 1 ? "card" : "cards"}: ` +
+        `${noneMerged.items.map((c) => `${mdText(c.name)} (${shown[c.state]})`).join("; ")}${more(noneMerged)}.`,
+    );
+  } else if (withGitHubPr) {
+    lines.push("- Every Done card with a GitHub pull request has at least one that is merged.");
+  }
+  if (v.otherHost) {
+    lines.push(`- ${v.otherHost} Done ${v.otherHost === 1 ? "card links" : "cards link"} to a host other than GitHub, so ${v.otherHost === 1 ? "it was" : "they were"} not checked.`);
+  }
+  lines.push("_GitHub says whether a pull request was merged. It does not say the work matches the card, was reviewed, or passed checks._");
+  return lines;
+}
+
+export function renderOutcomeAudit(boardName, audit, { now = Date.now(), verification } = {}) {
   const { progress, provenDone, items, unprovenSignOff, waiting, ruleBreaks, inconsistent, missingParent, exemptLabels, rule, evidence } = audit;
   const out = [`# Outcome audit: ${boardName}`, `_${new Date(now).toISOString().slice(0, 10)}_`, ""];
 
@@ -341,6 +368,8 @@ export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) 
     );
   }
 
+  if (verification) out.push("## Pull requests on GitHub", ...renderVerification(verification), "");
+
   out.push(
     "## The rule",
     ...rule.map((r) => `- ${r.text}`),
@@ -348,7 +377,9 @@ export function renderOutcomeAudit(boardName, audit, { now = Date.now() } = {}) 
     "",
     "## What counts as evidence",
     ...evidence.map((e) => `- ${e.text}`),
-    "_Only Trello is read: an attached pull request is seen, not checked for a merge._",
+    verification?.enabled
+      ? "_Trello and GitHub were read: a pull request on a Done card was asked about, the other evidence comes from the card._"
+      : "_Only Trello is read: an attached pull request is seen, not checked for a merge._",
   );
 
   return out.join("\n").trimEnd();

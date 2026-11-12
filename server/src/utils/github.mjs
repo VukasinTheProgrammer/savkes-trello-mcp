@@ -7,6 +7,8 @@
 // result, reason or error carries it, even when the failure message did.
 
 import { pool } from "../trello/client.mjs";
+import { hasPullRequest } from "./outcome.mjs";
+import { cap } from "./rollup.mjs";
 
 const API = "https://api.github.com";
 const NAME = /^[A-Za-z0-9_.-]+$/;
@@ -63,6 +65,47 @@ async function checkOne({ owner, repo, number }, { token, fetchImpl, timeoutMs }
   } finally {
     clearTimeout(timer);
   }
+}
+
+// The GitHub pull requests linked on `cards` ([{ name, attachments }]), the ones to ask about,
+// and how the cards group them. A card whose only pull-request links are on another host
+// (GitLab, Bitbucket) is counted in otherHost: it has a link, just not one this can check.
+export function pullRequestsOnCards(cards) {
+  const prs = [];
+  const perCard = [];
+  let otherHost = 0;
+  for (const card of cards) {
+    const keys = [];
+    for (const attachment of card.attachments ?? []) {
+      const pr = parseGitHubPr(attachment?.url);
+      if (!pr) continue;
+      prs.push(pr);
+      keys.push(keyOf(pr));
+    }
+    if (keys.length) perCard.push({ name: card.name, keys });
+    else if (hasPullRequest(card.attachments)) otherHost++;
+  }
+  return { prs, perCard, otherHost };
+}
+
+// What GitHub said, per pull request and per card. A card is listed when none of its pull
+// requests is merged; its state is the most hopeful one it has (open, then closed), and
+// "unverified" when GitHub could not be asked.
+export function summarizeVerification({ perCard, otherHost }, { results, notChecked }) {
+  const count = { merged: 0, open: 0, closed: 0, unverified: 0 };
+  for (const r of results.values()) count[r.state]++;
+  const noneMerged = [];
+  for (const card of perCard) {
+    const states = card.keys.map((k) => results.get(k)?.state ?? "unverified");
+    if (states.includes("merged")) continue;
+    noneMerged.push({ name: card.name, state: states.includes("open") ? "open" : states.includes("closed") ? "closed" : "unverified" });
+  }
+  return {
+    enabled: true,
+    pullRequests: { ...count, notChecked },
+    cards: { withGitHubPr: perCard.length, noneMerged: cap(noneMerged) },
+    otherHost,
+  };
 }
 
 // `prs`: [{ owner, repo, number }] as parseGitHubPr returns them. Returns

@@ -2176,6 +2176,112 @@ assert.equal(sawSignal.aborted, false);
   await assert.rejects(() => checkPullRequests(prs, { token: "", fetchImpl: fakeFetch }), /token is required/);
 }
 
+// ---------------------------------------------------------------------------
+// getOutcomeAudit with verifyPullRequests: the linked pull requests of Done cards, asked of GitHub.
+// Trello and GitHub are both mocked. All data below is invented.
+{
+  const TOKEN = "ghp_TESTTOKEN456";
+  const AC = "- **Given** a user\n  **When** they act\n  **Then** it works";
+  const pr = (n) => [{ url: `https://github.com/acme/web/pull/${n}` }];
+  const boardCards = [
+    { id: "e1", name: "EPIC 1. Shop", idList: "L1" },
+    { id: "s11", name: "1.1. Checkout", idList: "L1", desc: AC },
+    { id: "t1", name: "1.1.1. Merged PR", idList: "L3", attachments: pr(1) },
+    { id: "t2", name: "1.1.2. Open PR", idList: "L3", attachments: pr(2) },
+    { id: "t3", name: "1.1.3. Other host", idList: "L3", attachments: [{ url: "https://gitlab.com/acme/group/web/-/merge_requests/7" }] },
+    { id: "t4", name: "1.1.4. No link", idList: "L3", attachments: [] },
+    { id: "t5", name: "1.1.5. Missing PR", idList: "L3", attachments: pr(3) },
+    { id: "t6", name: "1.1.6. Still going", idList: "L2", attachments: pr(4) },
+    { id: "e2", name: "EPIC 2. Other", idList: "L1" },
+    { id: "s21", name: "2.1. Misc", idList: "L1", desc: AC },
+    { id: "t7", name: "2.1.1. Elsewhere", idList: "L3", attachments: pr(9) },
+  ];
+  const github = { "/repos/acme/web/pulls/9": [200, { merged: true, state: "closed" }], "/repos/acme/web/pulls/1": [200, { merged: true, state: "closed" }], "/repos/acme/web/pulls/2": [200, { merged: false, state: "open" }], "/repos/acme/web/pulls/3": [404, { message: "Not Found" }] };
+  const sent = [];
+  const realEnv = process.env.GITHUB_TOKEN;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    sent.push({ host: u.host, method: opts.method ?? "GET", path: u.pathname, auth: opts.headers?.Authorization });
+    if (u.host === "api.github.com") {
+      const [status, body] = github[u.pathname] ?? [500, {}];
+      return new Response(JSON.stringify(body), { status });
+    }
+    const bodies = {
+      "/1/boards/BX": () => ({ name: "Acme shop" }),
+      "/1/boards/BX/lists": () => [{ id: "L1", name: "Backlog" }, { id: "L2", name: "Doing" }, { id: "L3", name: "Done" }],
+      "/1/boards/BX/cards": () => boardCards,
+      "/1/boards/BX/checklists": () => [],
+      "/1/boards/BX/actions": () => [],
+    };
+    return u.pathname in bodies ? new Response(JSON.stringify(bodies[u.pathname]()), { status: 200 }) : new Response("not mocked", { status: 404 });
+  };
+  const call = async (args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 9, method: "tools/call", params: { name: "getOutcomeAudit", arguments: { boardId: "BX", epic: "1", ...args } } });
+    return { ...r, text: r.content[0].text, data: r.isError ? null : JSON.parse(r.content[0].text) };
+  };
+  const githubCalls = () => sent.filter((r) => r.host === "api.github.com");
+
+  try {
+    // Off by default: GitHub is never called and the result has no verification part.
+    process.env.GITHUB_TOKEN = TOKEN;
+    const off = await call({ format: "json" });
+    assert.equal("verification" in off.data, false);
+    assert.equal(githubCalls().length, 0);
+
+    // Asked for without a token: nothing is called, and the result says plainly that nothing was checked.
+    delete process.env.GITHUB_TOKEN;
+    const noToken = await call({ format: "json", verifyPullRequests: true });
+    assert.notEqual(noToken.isError, true, noToken.text);
+    assert.deepEqual(noToken.data.verification, { enabled: false, reason: "GITHUB_TOKEN is not set" });
+    assert.equal(githubCalls().length, 0);
+    assert.match((await call({ verifyPullRequests: true })).data.report, /## Pull requests on GitHub\nNot checked: GITHUB_TOKEN is not set/);
+    // A client that did not expand "${GITHUB_TOKEN}" passes the literal text; that is no token.
+    process.env.GITHUB_TOKEN = "${GITHUB_TOKEN}";
+    assert.deepEqual((await call({ format: "json", verifyPullRequests: true })).data.verification, { enabled: false, reason: "GITHUB_TOKEN is not set" });
+    assert.equal(githubCalls().length, 0);
+    delete process.env.GITHUB_TOKEN;
+
+    // With a token: only the pull requests of Done cards are asked about (not 1.1.6, which is in Doing).
+    process.env.GITHUB_TOKEN = TOKEN;
+    const on = await call({ format: "json", verifyPullRequests: true });
+    assert.notEqual(on.isError, true, on.text);
+    assert.deepEqual(on.data.verification, {
+      enabled: true,
+      pullRequests: { merged: 1, open: 1, closed: 0, unverified: 1, notChecked: 0 },
+      cards: {
+        withGitHubPr: 3,
+        noneMerged: { count: 2, items: [{ name: "1.1.2. Open PR", state: "open" }, { name: "1.1.5. Missing PR", state: "unverified" }] },
+      },
+      otherHost: 1,
+    });
+    assert.deepEqual(githubCalls().map((r) => r.path).sort(), ["/repos/acme/web/pulls/1", "/repos/acme/web/pulls/2", "/repos/acme/web/pulls/3"]);
+    assert.equal(githubCalls().every((r) => r.method === "GET" && r.auth === `Bearer ${TOKEN}`), true);
+    assert.equal(sent.every((r) => r.method === "GET"), true, "still read-only");
+    assert.equal(on.text.includes(TOKEN), false, "the token is never in the output");
+    // The numbers everyone already reads are untouched by the check.
+    assert.deepEqual(on.data.progress, off.data.progress);
+    assert.deepEqual(on.data.provenDone, off.data.provenDone);
+
+    // Scoped like the rest of the audit: epic 1 leaves 2.1.1 out (its pull request 9 is not asked about); no scope includes it.
+    assert.equal(githubCalls().some((r) => r.path.endsWith("/pulls/9")), false);
+    const all = await call({ format: "json", verifyPullRequests: true, epic: undefined });
+    assert.equal(all.data.verification.pullRequests.merged, 2);
+    assert.equal(githubCalls().some((r) => r.path.endsWith("/pulls/9")), true);
+
+    const md = (await call({ verifyPullRequests: true })).data.report;
+    assert.match(md, /## Pull requests on GitHub\n1 of 3 linked pull requests are merged/);
+    assert.match(md, /None merged on 2 cards: .*1\.1\.2.*\(open\).*1\.1\.5.*\(could not verify\)/);
+    assert.match(md, /1 Done card links to a host other than GitHub/);
+    assert.match(md, /It does not say the work matches the card/);
+    assert.equal(/not checked for a merge/.test(md), false, "the old footer would now be wrong");
+    assert.match((await call()).data.report, /not checked for a merge/);
+  } finally {
+    if (realEnv === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = realEnv;
+  }
+}
+
 globalThis.fetch = realFetch;
 
 console.log("ok");

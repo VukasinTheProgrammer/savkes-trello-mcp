@@ -4,6 +4,8 @@
 
 import { resolveBoard, trello } from "../trello/client.mjs";
 import { buildDonePathAudit, renderDonePathAudit } from "../utils/donepath.mjs";
+import { checkPullRequests, pullRequestsOnCards, summarizeVerification } from "../utils/github.mjs";
+import { cardNumber } from "../utils/numbering.mjs";
 import { buildOutcomeAudit, indexFacts, renderOutcomeAudit } from "../utils/outcome.mjs";
 import {
   buildReport,
@@ -13,6 +15,7 @@ import {
   renderOutline,
   renderReport,
   scopeTo,
+  walk,
 } from "../utils/rollup.mjs";
 
 const CARD_READ_LIMIT = 1000;
@@ -249,7 +252,9 @@ export const TOOLS = {
       "each Done card without evidence has been waiting, oldest first, counted from the day it " +
       "became Done (moved into a Done list, created there, or its due date ticked). (5) The rule and the evidence definitions are printed with every " +
       "result, so they cannot drift between runs. " +
-      "Evidence means a link or a note is on the card, not that the pull request was merged. " +
+      "Evidence means a link or a note is on the card, not that the pull request was merged, " +
+      "unless verifyPullRequests is true and GITHUB_TOKEN is set: then it also asks GitHub " +
+      "whether each Done card's pull request was merged and reports counts. " +
       "Read-only: nothing is moved or changed, cards are reported and people are not (no " +
       "member names, ids or comment text come back). By default returns { boardId, board, " +
       "format, report } with report as markdown; with format \"json\" it returns the same " +
@@ -276,9 +281,14 @@ export const TOOLS = {
           description:
             'Label names for work that never has a pull request, e.g. ["Design", "Docs"]. A Done card with one of them is not listed under "Done without a pull request"; a ticked Definition of Done or a deployed comment still counts as its evidence. Default: none',
         },
+        verifyPullRequests: {
+          type: "boolean",
+          description:
+            "Ask GitHub whether the pull requests on Done cards were merged (default: false). Needs GITHUB_TOKEN, a read-only token; without it nothing is asked and the result says so. Up to 100 pull requests, github.com links only",
+        },
       },
     },
-    async run({ boardId, epic, format = "markdown", doneLists, exemptLabels = [] } = {}) {
+    async run({ boardId, epic, format = "markdown", doneLists, exemptLabels = [], verifyPullRequests = false } = {}) {
       oneOf("format", format, ["markdown", "json"]);
       const board = resolveBoard(boardId);
       // Comments come from their own paged request; everything else is the same four reads
@@ -306,7 +316,23 @@ export const TOOLS = {
         commentsPossiblyTruncated: comments.truncated,
         movesPossiblyTruncated: moves.truncated,
       };
-      if (format === "json") return { boardId: board, board: name, format, ...result, warnings };
+      let verification;
+      if (verifyPullRequests) {
+        // A client that did not expand "${GITHUB_TOKEN}" hands over the literal text; that is no token.
+        const token = process.env.GITHUB_TOKEN?.trim();
+        if (!token || /^\$\{.*\}$/.test(token)) {
+          verification = { enabled: false, reason: "GITHUB_TOKEN is not set" };
+        } else {
+          // The same cards the audit counts as Done, inside the same epic scope.
+          const isDone = doneListTest(doneLists);
+          const inScope = new Set();
+          walk(roots, (node) => inScope.add(node.number));
+          const doneCards = cards.filter((c) => (isDone(listNames[c.idList]) || c.dueComplete === true) && inScope.has(cardNumber(c.name)));
+          const found = pullRequestsOnCards(doneCards);
+          verification = summarizeVerification(found, await checkPullRequests(found.prs, { token }));
+        }
+      }
+      if (format === "json") return { boardId: board, board: name, format, ...result, ...(verification ? { verification } : {}), warnings };
       const notes = boardNotes(warnings, cardCount);
       if (warnings.commentsPossiblyTruncated) {
         notes.push(
@@ -322,7 +348,7 @@ export const TOOLS = {
         boardId: board,
         board: name,
         format,
-        report: renderOutcomeAudit(name, result, { now }) + noteBlock(notes),
+        report: renderOutcomeAudit(name, result, { now, verification }) + noteBlock(notes),
       };
     },
   },
