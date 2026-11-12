@@ -238,7 +238,7 @@ export const TOOLS = {
 
   getOutcomeAudit: {
     description:
-      "Checks whether work marked Done has evidence behind it, reading only Trello. Works on " +
+      "Checks whether work marked Done has evidence behind it, reading Trello (and GitHub only when verifyPullRequests is on). Works on " +
       "boards that use the numbered hierarchy (EPIC 1 -> 1.1 story -> 1.1.1 task), like " +
       "getStatusReport. It does five things. (1) Next to the usual percent-done it gives a " +
       "second number, done with evidence: a work item counts only if it sits in a Done-style list AND " +

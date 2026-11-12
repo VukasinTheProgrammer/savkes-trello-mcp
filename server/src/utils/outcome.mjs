@@ -4,7 +4,8 @@
 // Trello can only say that a card sits in a Done list. This reads what the card itself
 // carries, and nothing outside Trello: a pull-request link, a comment saying it was
 // deployed, a Definition of Done checklist that is fully ticked. It cannot tell whether
-// the pull request was merged, only that someone attached one.
+// the pull request was merged, only that someone attached one. Asking GitHub about the merge
+// is the optional step in utils/github.mjs; this file only prints what it found.
 //
 // Nothing here scores or names a person. A card has a member count and a comment, and
 // both are reduced to a yes/no before anything leaves this file.
