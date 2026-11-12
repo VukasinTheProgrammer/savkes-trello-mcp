@@ -32,6 +32,7 @@ import {
   isOneSentence,
   renderOutcomeAudit,
 } from "./utils/outcome.mjs";
+import { buildDonePathAudit, renderDonePathAudit } from "./utils/donepath.mjs";
 import {
   buildReport,
   buildTree,
@@ -1947,6 +1948,71 @@ assert.equal(sawSignal.aborted, false);
   // No comments were passed here, so the "deployed" card (1.1.2) is the one that drops out.
   assert.deepEqual(pure.provenDone, { done: 3, total: 10, percent: 30 });
   assert.match(renderOutcomeAudit("B", pure, { now: Date.parse("2026-11-07T00:00:00Z") }), /^# Outcome audit: B\n_2026-11-07_/);
+}
+
+// ---------------------------------------------------------------------------
+// Done-path audit: how did the Done cards get there? All data below is invented.
+{
+  const at = (min) => new Date(Date.parse("2026-10-01T09:00:00Z") + min * 60_000).toISOString();
+  const ev = (cardId, min, from, to, by = "m1") => ({ cardId, at: at(min), from, to, by });
+  const card = (id, name, listName, idMembers = []) => ({ id, name, listName, idMembers });
+  const cards = [
+    card("a", "1.1.1. Full path", "Done", ["m2"]),
+    card("b", "1.1.2. Straight to Done", "Done(Sprint 2)", ["m9"]),
+    card("c", "1.1.3. Skips review", "Done", ["m3"]),
+    card("d", "1.1.4. Logged afterwards", "Done"),
+    card("e", "1.1.5. History out of reach", "Done"),
+    card("f1", "1.2.1. Batch one", "Done", ["m1"]),
+    card("f2", "1.2.2. Batch two", "Done", ["m2"]),
+    card("f3", "1.2.3. Batch three", "Done", ["m2"]),
+    card("f4", "1.2.4. Batch four", "Done", ["m2"]),
+    card("f5", "1.2.5. Batch five", "Done", ["m2"]),
+    card("g", "1.3.1. Still open", "In Progress", ["m1"]),
+  ];
+  const events = [
+    ev("a", 0, null, "Backlog", "m2"), ev("a", 1, "Backlog", "In Progress", "m2"),
+    ev("a", 2, "In Progress", "Testing/Review", "m2"), ev("a", 3, "Testing/Review", "Done", "m2"),
+    ev("b", 0, null, "Backlog"), ev("b", 60, "Backlog", "Done(Sprint 2)"),
+    ev("c", 0, null, "Backlog", "m3"), ev("c", 1, "Backlog", "In Progress", "m3"), ev("c", 120, "In Progress", "Done", "m3"),
+    ev("d", 180, null, "Done"),
+    ...["f1", "f2", "f3", "f4", "f5"].flatMap((id, i) => [
+      ev(id, 0, null, "Backlog"), ev(id, 1, "Backlog", "In Progress"),
+      ev(id, 2, "In Progress", "Testing/Review"), ev(id, 300 + i, "Testing/Review", "Done"),
+    ]),
+    ev("g", 0, null, "Backlog"), ev("g", 1, "Backlog", "In Progress"),
+  ];
+  const audit = buildDonePathAudit({ cards, events });
+  assert.equal(audit.doneCards, 10);
+  assert.equal(audit.noHistory, 1, "e has no events at all, so it is not judged");
+  assert.equal(audit.createdInDone, 1, "d was created in Done: logged afterwards, not a skipped stage");
+  assert.deepEqual(audit.skipped.progress, 1);
+  assert.deepEqual(audit.skipped.review, 2);
+  assert.deepEqual(audit.skipped.both, { count: 1, items: [{ name: "1.1.2. Straight to Done" }] });
+  // Moves into Done from somewhere else: a, b, c and the five batch cards.
+  assert.equal(audit.doneMoves, 8);
+  // Five cards by the same mover, a minute apart, is one burst; b's lone move an hour earlier is not.
+  assert.deepEqual(audit.bursts, { count: 1, cards: 5, largest: 5, percent: 62 });
+  // a, c and f1 were moved by one of the card's own members; b and f2..f5 were not.
+  assert.deepEqual(audit.movedByAssignee, { count: 3, of: 8 });
+  assert.deepEqual(audit.settings, { burstSize: 5, burstMinutes: 5, progressLists: ["In Progress"], reviewLists: ["Testing/Review", "Testing", "Review", "QA"] });
+  // No person leaves the module: not a member id, not a mover id.
+  assert.equal(/\bm[0-9]\b/.test(JSON.stringify(audit)), false, "no member ids in the result");
+
+  // The same moves, spread over more than five minutes apart, are not a burst; so is a smaller burstSize honoured.
+  const spaced = events.map((e) => (e.to === "Done" && e.cardId.startsWith("f") ? { ...e, at: at(300 + Number(e.cardId[1]) * 10) } : e));
+  assert.equal(buildDonePathAudit({ cards, events: spaced }).bursts.count, 0);
+  assert.equal(buildDonePathAudit({ cards, events, burstSize: 6 }).bursts.count, 0);
+  // Mover ids missing (history read without them): nothing is called a burst and no mover is compared.
+  const anon = buildDonePathAudit({ cards, events: events.map((e) => ({ ...e, by: null })) });
+  assert.equal(anon.bursts.count, 0);
+  assert.deepEqual(anon.movedByAssignee, { count: 0, of: 0 });
+
+  const md = renderDonePathAudit("Acme", audit, { now: Date.parse("2026-11-07T00:00:00Z") });
+  assert.match(md, /^# Done-path audit: Acme\n_2026-11-07_/);
+  assert.match(md, /10 cards sit in Done/);
+  assert.match(md, /1 batch of 5 or more/);
+  assert.match(md, /1\.1\.2\\?\. Straight to Done/);
+  assert.match(md, /not a verdict/i);
 }
 
 globalThis.fetch = realFetch;
