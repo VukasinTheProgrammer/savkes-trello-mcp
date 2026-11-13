@@ -1,0 +1,1 @@
+{"name":"trello-mcp-collaboration-hub","version":"0.2.0","private":true,"type":"module","engines":{"node":">=20"},"scripts":{"start":"node src/server.mjs","demo":"node demo.mjs","test":"node --test test/*.test.mjs","check":"node --check src/server.mjs && node --check demo.mjs"},"dependencies":{"ws":"^8.18.0"}}

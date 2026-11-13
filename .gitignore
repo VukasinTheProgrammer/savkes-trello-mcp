@@ -2,3 +2,35 @@
 .env.*
 !.env.example
 .claude/tasks/
+.hub-token
+MAX_BODY
+server/.collaboration-dev-id
+server/phase3_verify.mjs
+*.log
+
+# Local collaboration configuration
+.mcp.json
+.hub-token
+.collaboration-dev-id
+**/.collaboration-dev-id
+
+# Generated databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Local backups
+collaboration-backup/
+**/*.backup
+
+# Dependencies
+**/node_modules/
+
+.mcp.json
+.DS_Store
+**/.DS_Store
+
+.mcp.json
+.DS_Store
+**/.DS_Store
