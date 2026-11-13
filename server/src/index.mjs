@@ -25,12 +25,13 @@ import { PROMPTS } from "./prompts.mjs";
 import { listResources, readResource } from "./resources.mjs";
 import { TOOLS as CARD_TOOLS } from "./tools/cards.mjs";
 import { TOOLS as HIERARCHY_TOOLS } from "./tools/hierarchy.mjs";
+import { TOOLS as REPORT_TOOLS } from "./tools/reports.mjs";
 
 // The selftest asserts the full name list, so a collision between the two halves shows
 // up as a short count — which is also why no total is written here: a number in a
 // comment goes stale the first time a tool is added, and the selftest already holds
 // the real one.
-export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS };
+export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS, ...REPORT_TOOLS };
 
 // One source for both the handshake and the stderr log prefix, so they can't drift.
 const SERVER = { name: "trello-board", version: "0.4.0" };
@@ -74,7 +75,7 @@ export function validateArgs(name, schema = {}, args = {}) {
   for (const [key, value] of Object.entries(args)) {
     const want = schema.properties?.[key]?.type;
     if (!want || value === undefined) continue;
-    const got = Array.isArray(value) ? "array" : typeof value;
+    const got = Array.isArray(value) ? "array" : want === "integer" && Number.isInteger(value) ? "integer" : typeof value;
     if (got !== want) {
       throw new Error(`Argument ${key} for ${name} must be ${want}, got ${got}`);
     }

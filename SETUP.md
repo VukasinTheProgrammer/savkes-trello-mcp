@@ -47,6 +47,14 @@ export TRELLO_BOARD_ID="your_board_id"   # optional: default board for board-sco
 The server reads only the process environment and does not load `.env`
 files. `.env.example` lists the variable names.
 
+**Optional: check pull requests on GitHub.** `getOutcomeAudit` with
+`verifyPullRequests: true` asks GitHub whether the pull requests on Done
+cards were merged. It needs a **read-only** GitHub token in the server's
+environment, next to the Trello ones (`GITHUB_TOKEN`, listed in
+`.env.example`). Without it nothing is sent to GitHub and the audit says so.
+Only `api.github.com` is called, with GET, and the token appears in no
+output. Add it to the server's `env` block only if you set the variable.
+
 **Finding a board id:** once the server is connected, ask Claude to call
 `getMyBoards`. Tools accept a board URL, the 8-character shortLink, or the
 24-character id. For `TRELLO_BOARD_ID`, prefer the full id.

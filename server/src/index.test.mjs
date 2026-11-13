@@ -20,6 +20,32 @@ import {
   parentNumber,
   spreadPositions,
 } from "./utils/numbering.mjs";
+import {
+  EVIDENCE,
+  TEAM_RULE,
+  buildOutcomeAudit,
+  hasDeployedProof,
+  hasPullRequest,
+  hasTickedDod,
+  indexFacts,
+  isDeployedComment,
+  isOneSentence,
+  renderOutcomeAudit,
+} from "./utils/outcome.mjs";
+import { buildDonePathAudit, renderDonePathAudit } from "./utils/donepath.mjs";
+import { checkPullRequests, parseGitHubPr, summarizeVerification } from "./utils/github.mjs";
+import {
+  buildReport,
+  buildTree,
+  compareNumbers,
+  countCriteria,
+  countOpenCriteria,
+  doneListTest,
+  renderMermaid,
+  renderOutline,
+  renderReport,
+  scopeTo,
+} from "./utils/rollup.mjs";
 
 const graph = buildLinkGraph([
   {
@@ -193,11 +219,11 @@ assert.deepEqual(spreadPositions(2000, 1000, 2), [3024, 4048]);
 // tight on its own. Only <= 0 is unusable.
 assert.deepEqual(spreadPositions(1000, 1001, 3), [1000.25, 1000.5, 1000.75]);
 
-// 16 ported from mcp-trello + 9 from the wrapper + 9 added since = 34. A name
+// 16 ported from mcp-trello + 9 from the wrapper + 9 added since + 4 report tools = 38. A name
 // collision between the halves would silently drop a tool, so the count is asserted
 // alongside the names. This is the only place the total is written down.
 const list = await handle({ id: 1, method: "tools/list" });
-assert.equal(list.tools.length, 34);
+assert.equal(list.tools.length, 38);
 assert.deepEqual(
   list.tools.map((t) => t.name).sort(),
   [
@@ -216,15 +242,19 @@ assert.deepEqual(
     "detachCard",
     "findCard",
     "findCards",
+    "getBoardMap",
     "getBoardMembers",
     "getCard",
     "getCardChecklists",
     "getCardsByList",
+    "getDonePathAudit",
     "getLabels",
     "getLists",
     "getMyBoards",
     "getMyCards",
+    "getOutcomeAudit",
     "getRecentActivity",
+    "getStatusReport",
     "listBoardCardLinks",
     "listCardAttachments",
     "moveCard",
@@ -1114,6 +1144,1199 @@ globalThis.fetch = async (url, opts = {}) => {
 await handle({ id: 1, method: "tools/call", params: { name: "getMyCards", arguments: {} } });
 assert.ok(sawSignal instanceof AbortSignal, "fetch was called with no abort signal");
 assert.equal(sawSignal.aborted, false);
+
+// ---------------------------------------------------------------------------
+// Roll-up, status report and board map, against one fixture board.
+{
+  const DAY = 86_400_000;
+  const AC =
+    "**Acceptance Criteria:**\n" +
+    "- **Given** a user\n  **When** they sign in\n  **Then** they land home\n" +
+    "- **Given** a bad password\n  **When** they sign in\n  **Then** they see an error";
+  const listNames = { L1: "Backlog", L2: "Current Sprint Backlog", L3: "Done" };
+  const checklists = [
+    { id: "ch1", idCard: "c22", name: "Acceptance Criteria", checkItems: [{ name: "a" }, { name: "b" }, { name: "c" }] },
+  ];
+  // Offsets end in .5 so a few milliseconds of test runtime can't tip a day count.
+  const makeFixture = (now) => {
+    const ago = (days) => new Date(now - days * DAY).toISOString();
+    return [
+      { id: "c1", name: "EPIC 1. Auth", idList: "L1" },
+      { id: "c11", name: "1.1. Login", idList: "L1", desc: AC },
+      { id: "c111", name: "1.1.1. Form", idList: "L3", dateLastActivity: ago(3) },
+      { id: "c112", name: "1.1.2. API", idList: "L3", dateLastActivity: ago(2) },
+      { id: "c12", name: "1.2. Reset password", idList: "L1", desc: "Nothing written yet." },
+      { id: "c121", name: "1.2.1. Email", idList: "L2", labels: [{ name: "Blocked" }], due: ago(4.5), dateLastActivity: ago(30.5) },
+      { id: "c122", name: "1.2.2. Page", idList: "L1", dateLastActivity: ago(1) },
+      { id: "cx", name: "1.3. Archived", idList: "L1", closed: true },
+      { id: "c2", name: "EPIC 2. Reports", idList: "L1" },
+      { id: "c22", name: "2.2. Export", idList: "L1" },
+      { id: "c221", name: "2.2.1. CSV", idList: "L3" },
+      { id: "c210", name: "2.10. Archive old reports", idList: "L3" },
+      { id: "c111b", name: "1.1.1. Form again", idList: "L1" },
+      { id: "c991", name: "9.9.1. Orphan", idList: "L1", dateLastActivity: ago(2) },
+      { id: "sep", name: "---", idList: "L1" },
+    ];
+  };
+  const now = Date.parse("2026-11-06T12:00:00Z");
+  const cards = makeFixture(now).filter((c) => !c.closed);
+  const tree = buildTree({ cards, lists: listNames, checklists: { c22: checklists } });
+
+  // Numbers sort as numbers, so 2.2 comes before 2.10.
+  assert.equal(compareNumbers("2.2", "2.10") < 0, true);
+  assert.equal(compareNumbers("1", "1.1") < 0, true);
+  assert.deepEqual(tree.nodes.get("2").children.map((n) => n.number), ["2.2", "2.10"]);
+
+  // Roll-up counts work items (leaves); orphans stay in as roots; duplicates and the
+  // separator are set aside, not counted.
+  assert.deepEqual(tree.roots.map((r) => r.number), ["1", "2", "9.9.1"]);
+  assert.equal(tree.nodes.get("9.9.1").orphan, true);
+  assert.deepEqual(tree.duplicates, [{ number: "1.1.1", shortLink: undefined }]);
+  assert.equal(tree.unnumbered, 1);
+  const pct = (n) => [tree.nodes.get(n).done, tree.nodes.get(n).total, tree.nodes.get(n).percent];
+  assert.deepEqual(pct("1"), [2, 4, 50]);
+  assert.deepEqual(pct("1.1"), [2, 2, 100]);
+  assert.deepEqual(pct("1.2"), [0, 2, 0]);
+  assert.deepEqual(pct("2"), [2, 2, 100]);
+  // A parent dragged into Done with open work under it is still unfinished.
+  const early = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L3" },
+      { id: "b", name: "1.1. Y", idList: "L1" },
+    ],
+    lists: listNames,
+  });
+  assert.equal(early.nodes.get("1").percent, 0);
+  // 249 of 250 must not round up to 100.
+  const nearly = buildTree({
+    cards: Array.from({ length: 250 }, (_, i) => ({ id: `n${i}`, name: `EPIC ${i + 1}. E`, idList: i ? "L3" : "L1" })),
+    lists: listNames,
+  });
+  assert.equal(buildReport(nearly.roots, { now }).progress.percent, 99);
+
+  // What counts as done, and as acceptance criteria.
+  const isDone = doneListTest();
+  for (const yes of ["Done", " done ", "Shipped", "Completed", "Done (Q3)"]) assert.equal(isDone(yes), true, yes);
+  for (const no of ["Doing", "Undone", "Backlog", undefined]) assert.equal(isDone(no), false, String(no));
+  assert.equal(doneListTest(["Live"])("live"), true);
+  assert.equal(doneListTest(["Live"])("Done"), false);
+  assert.equal(
+    buildTree({ cards: [{ id: "a", name: "EPIC 1. X", idList: "L1", dueComplete: true }], lists: listNames }).nodes.get("1").isDone,
+    true,
+  );
+  assert.equal(countCriteria(AC), 2);
+  assert.equal(countCriteria("Given the above, we ship."), 0, "a sentence starting with Given is not a criterion");
+  // The one-line bullet form the card agent writes.
+  assert.equal(
+    countCriteria("- **Given** a card. **When** I freeze it. **Then** it is blocked.\n- **Given** x. **When** y. **Then** z."),
+    2,
+  );
+  assert.equal(countCriteria("", [{ name: "acceptance criteria", checkItems: [{}, {}, {}] }, { name: "Todo", checkItems: [{}] }]), 3);
+  // Lower-case Given/when/then, as people actually type it, counts too.
+  assert.equal(countCriteria("- Given I click Sign out, when the page reloads, then I am on the sign-in page."), 1);
+  // Only items explicitly not ticked are open; a missing state never blocks anything.
+  assert.equal(
+    countOpenCriteria([
+      { name: "Acceptance Criteria", checkItems: [{ state: "complete" }, { state: "incomplete" }, {}] },
+      { name: "Todo", checkItems: [{ state: "incomplete" }] },
+    ]),
+    1,
+  );
+  // A card in a list named Blocked is blocked even without the label.
+  const parked = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L9" },
+      { id: "b", name: "1.1. Y", idList: "L9", desc: "Given a, when b, then c." },
+      { id: "c", name: "1.1.1. Z", idList: "L9" },
+    ],
+    lists: { L9: "Blocked" },
+  });
+  assert.equal(parked.nodes.get("1.1.1").blocked, true);
+  // The label has to start with "block": Unblocked and Blockchain are not blockers.
+  const labelled = (name) =>
+    buildTree({ cards: [{ id: "a", name: "EPIC 1. X", idList: "L1", labels: [{ name }] }], lists: listNames }).nodes.get("1").blocked;
+  for (const yes of ["Blocked", "blocked: waiting on API", "Blocker", "Blocking"]) assert.equal(labelled(yes), true, yes);
+  for (const no of ["Unblocked", "Blockchain", "Not blocked"]) assert.equal(labelled(no), false, no);
+  assert.deepEqual(buildReport(parked.roots, { now }).attention.blocked.items.map((c) => c.number), ["1.1.1"]);
+  // Blocked and overdue list the work item once, not once per level.
+  const stacked = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L1", labels: [{ name: "Blocked" }], due: new Date(now - DAY).toISOString() },
+      { id: "b", name: "1.1. Y", idList: "L1", labels: [{ name: "Blocked" }], due: new Date(now - DAY).toISOString() },
+      { id: "c", name: "1.1.1. Z", idList: "L1", labels: [{ name: "Blocked" }], due: new Date(now - DAY).toISOString() },
+    ],
+    lists: listNames,
+  });
+  const stackedReport = buildReport(stacked.roots, { now });
+  assert.deepEqual(stackedReport.attention.blocked.items.map((c) => c.number), ["1.1.1"]);
+  assert.deepEqual(stackedReport.attention.overdue.items.map((c) => c.number), ["1.1.1"]);
+  // A story whose work is done but whose criteria are not ticked is not ready for sign-off.
+  const unticked = buildTree({
+    cards: [
+      { id: "a", name: "EPIC 1. X", idList: "L1" },
+      { id: "b", name: "1.1. Y", idList: "L1" },
+      { id: "c", name: "1.1.1. Z", idList: "L3" },
+    ],
+    lists: listNames,
+    checklists: { b: [{ name: "Acceptance Criteria", checkItems: [{ state: "complete" }, { state: "incomplete" }] }] },
+  });
+  const untickedReport = buildReport(unticked.roots, { now });
+  assert.equal(untickedReport.readyForSignOff.count, 0);
+  assert.deepEqual(untickedReport.attention.storiesWithUnmetCriteria.items, [{ number: "1.1", name: "1.1. Y", open: 1 }]);
+  assert.match(renderReport("B", untickedReport, { now }), /Done but acceptance criteria not ticked \(1\):\*\* 1\.1\. Y, 1 open/);
+
+  // The data behind the report.
+  const report = buildReport(tree.roots, { now, staleDays: 14 });
+  assert.deepEqual(report.progress, { done: 4, total: 7, percent: 57 });
+  assert.deepEqual(report.readyForSignOff.items.map((s) => [s.number, s.criteria]), [["1.1", 2], ["2.2", 3]]);
+  assert.deepEqual(report.attention.storiesWithoutCriteria.items.map((s) => s.number), ["1.2", "2.10"]);
+  assert.deepEqual(report.attention.blocked.items.map((c) => c.number), ["1.2.1"]);
+  assert.deepEqual(report.attention.overdue.items.map((c) => [c.number, c.daysLate]), [["1.2.1", 5]]);
+  assert.deepEqual(report.attention.stale.items.map((c) => [c.number, c.daysIdle]), [["1.2.1", 30]]);
+  assert.deepEqual(report.openByList, { "Current Sprint Backlog": 1, Backlog: 2 });
+  // Idle time is about work items: an epic nobody touched is not "idle".
+  assert.equal(report.attention.stale.items.some((c) => c.number === "1"), false);
+
+  // Lists are capped but the count is not.
+  const busy = buildTree({
+    cards: Array.from({ length: 25 }, (_, i) => ({ id: `s${i}`, name: `EPIC ${i + 1}. E`, idList: "L1", dateLastActivity: "2020-01-01T00:00:00Z" })),
+    lists: listNames,
+  });
+  const busyStale = buildReport(busy.roots, { now }).attention.stale;
+  assert.equal(busyStale.count, 25);
+  assert.equal(busyStale.items.length, 10);
+
+  const md = renderReport("Acme delivery", report, { now });
+  assert.match(md, /^# Delivery status: Acme delivery\n_2026-11-06_/);
+  assert.match(md, /\*\*57% complete\.\*\* 4 of 7 work items done across 2 epics, plus 1 card whose parent is missing\./);
+  // The orphan is counted in the totals but listed on its own, not as an epic.
+  assert.deepEqual(report.items.map((e) => [e.number, e.tier]), [["1", "epic"], ["2", "epic"]]);
+  assert.deepEqual(report.attention.missingParent.items, [{ number: "9.9.1", name: "9.9.1. Orphan", expectedParent: "9.9" }]);
+  assert.match(md, /\*\*Parent card missing \(1\):\*\* 9\.9\.1\. Orphan \(no 9\.9\)/);
+  // Card names are text, not formatting, in the status report as in the audit.
+  const marked = buildTree({ cards: [{ id: "x", name: "EPIC 3. *Draft* [wip]", idList: "L" }], lists: { L: "Doing" } });
+  assert.ok(renderReport("B", buildReport(marked.roots, { now }), { now }).includes("| EPIC 3. \\*Draft\\* \\[wip\\] |"));
+  assert.doesNotMatch(md, /\| 9\.9\.1\. Orphan \|/);
+  // Scoped to a story, the report calls it a story and its children tasks.
+  const storyReport = buildReport(scopeTo(tree, "1.2"), { now });
+  assert.deepEqual(storyReport.items.map((e) => e.tier), ["story"]);
+  assert.deepEqual(storyReport.items[0].children.map((c) => c.tier), ["task", "task"]);
+  assert.match(renderReport("B", storyReport, { now }), /0 of 2 work items done across 1 story\./);
+  assert.match(md, /\| EPIC 1\. Auth \| █████░░░░░ 50% \| 2 \/ 4 \|/);
+  assert.match(md, /\| EPIC 2\. Reports \| ██████████ 100% \| 2 \/ 2 \|/);
+  assert.match(md, /## Ready for sign-off\n- \*\*1\.1\. Login\*\*: every work item done, 2 acceptance criteria\n- \*\*2\.2\. Export\*\*/);
+  assert.match(md, /\*\*Blocked \(1\):\*\* 1\.2\.1\. Email \[Current Sprint Backlog\]/);
+  assert.match(md, /\*\*Overdue \(1\):\*\* 1\.2\.1\. Email, 5 days late/);
+  assert.match(md, /\*\*No activity for 14\+ days \(1\):\*\* 1\.2\.1\. Email .*idle 30 days/);
+  assert.match(md, /Backlog: 2 · Current Sprint Backlog: 1/);
+  assert.doesNotMatch(md, /1\.3\. Archived/, "archived cards stay out");
+  // A clean board says so instead of printing an empty heading.
+  const calm = buildTree({ cards: [{ id: "a", name: "EPIC 1. X", idList: "L3", desc: "" }], lists: listNames });
+  assert.match(renderReport("B", buildReport(calm.roots, { now }), { now }), /Nothing needs attention\./);
+
+  // Board map.
+  const outline = renderOutline(tree.roots).split("\n");
+  assert.equal(outline[0], "EPIC 1. Auth  █████░░░░░ 50% (2/4)");
+  assert.ok(outline.includes("├─ 1.1. Login  ██████████ 100% (2/2)"));
+  assert.ok(outline.includes("│  └─ 1.1.2. API  ✓ Done"));
+  assert.ok(outline.includes("   ├─ 1.2.1. Email  ○ Current Sprint Backlog [blocked]"));
+  assert.ok(outline.includes("└─ 1.2. Reset password  ░░░░░░░░░░ 0% (0/2)"));
+  assert.equal(renderOutline(tree.roots, 1).split("\n").length, 3, "depth 1 draws epics only");
+  assert.equal(renderOutline(scopeTo(tree, "1.2")).split("\n").length, 3, "a scoped story still draws itself");
+
+  const mermaid = renderMermaid(tree.roots);
+  assert.match(mermaid, /^flowchart TD\n/);
+  assert.match(mermaid, /n1\["EPIC 1\. Auth<br\/>50%"\]:::partial/);
+  assert.match(mermaid, /n1_1_1\["1\.1\.1\. Form"\]:::done/);
+  assert.match(mermaid, /n1_2_2\["1\.2\.2\. Page"\]:::open/);
+  assert.match(mermaid, /n1 --> n1_1\b/);
+  assert.match(mermaid, /classDef done /);
+  const nasty = buildTree({ cards: [{ id: "q", name: 'EPIC 7. Say "hi" #1 [x]', idList: "L1" }], lists: listNames });
+  assert.match(renderMermaid(nasty.roots), /n7\["EPIC 7\. Say #quot;hi#quot; #35;1 \[x\]"\]/);
+
+  assert.deepEqual(scopeTo(tree, "1").map((n) => n.number), ["1"]);
+  assert.deepEqual(scopeTo(tree, undefined), tree.roots);
+  assert.throws(() => scopeTo(tree, "9"), /No card numbered "9" on this board\. Top-level numbers: 1, 2\./);
+
+  // The tools, over the real dispatch path with a mocked board.
+  let mockCards = makeFixture(Date.now());
+  const sent = [];
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url));
+    sent.push({ path: u.pathname, params: Object.fromEntries(u.searchParams) });
+    const bodies = {
+      "/1/boards/BX": { name: "Acme delivery" },
+      "/1/boards/BX/lists": Object.entries(listNames).map(([id, name]) => ({ id, name })),
+      // Like Trello's default "visible" filter: archived cards are not returned.
+      "/1/boards/BX/cards": mockCards.filter((c) => !c.closed),
+      "/1/boards/BX/checklists": checklists,
+    };
+    return u.pathname in bodies
+      ? new Response(JSON.stringify(bodies[u.pathname]), { status: 200 })
+      : new Response(`not mocked: ${u.pathname}`, { status: 404, statusText: "Not Found" });
+  };
+  const call = async (name, args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 7, method: "tools/call", params: { name, arguments: { boardId: "BX", ...args } } });
+    return { ...r, data: r.isError ? null : JSON.parse(r.content[0].text), text: r.content[0].text };
+  };
+
+  const rep = await call("getStatusReport");
+  assert.notEqual(rep.isError, true, rep.text);
+  assert.equal(rep.data.board, "Acme delivery");
+  assert.equal(rep.data.format, "markdown");
+  assert.match(rep.data.report, /\*\*57% complete\.\*\*/);
+  assert.match(rep.data.report, /1\.2\.1\. Email, 5 days late/);
+  // The duplicate and the orphan are surfaced, with the tool that sorts them out.
+  assert.match(rep.data.report, /1 duplicate and 1 orphaned card numbers.*auditCardHierarchy/);
+  // Four reads, all GET, descriptions requested for the criteria count.
+  assert.deepEqual(sent.map((r) => r.path).sort(), ["/1/boards/BX", "/1/boards/BX/cards", "/1/boards/BX/checklists", "/1/boards/BX/lists"]);
+  assert.match(sent.find((r) => r.path.endsWith("/cards")).params.fields, /\bdesc\b/);
+  // Archived lists are read too, and checklist items come with their ticked state.
+  assert.equal(sent.find((r) => r.path.endsWith("/lists")).params.filter, "all");
+  assert.match(sent.find((r) => r.path.endsWith("/checklists")).params.checkItem_fields, /state/);
+  // None of the description text comes back to the caller.
+  assert.doesNotMatch(rep.text, /they land home/);
+
+  const json = await call("getStatusReport", { format: "json" });
+  assert.deepEqual(json.data.progress, { done: 4, total: 7, percent: 57 });
+  assert.deepEqual(json.data.warnings, { duplicateNumbers: 1, orphans: 1, possiblyTruncated: false });
+  assert.equal(json.data.report, undefined);
+
+  const scoped = await call("getStatusReport", { epic: "2", format: "json" });
+  assert.deepEqual(scoped.data.progress, { done: 2, total: 2, percent: 100 });
+  assert.deepEqual(scoped.data.items.map((e) => e.number), ["2"]);
+
+  // doneLists renames the Done list; with a name nothing matches, nothing is finished.
+  const noneDone = await call("getStatusReport", { doneLists: ["Live"], format: "json" });
+  assert.equal(noneDone.data.progress.done, 0);
+
+  for (const [args, pattern] of [
+    [{ epic: "9" }, /No card numbered "9" on this board\. Top-level numbers: 1, 2\./],
+    [{ format: "pdf" }, /format must be one of "markdown", "json", got "pdf"/],
+    [{ staleDays: 0 }, /staleDays must be a positive number/],
+    [{ doneLists: "Done" }, /doneLists for getStatusReport must be array, got string/],
+  ]) {
+    const bad = await call("getStatusReport", args);
+    assert.equal(bad.isError, true, JSON.stringify(args));
+    assert.match(bad.text, pattern);
+  }
+
+  const outlineMap = await call("getBoardMap");
+  assert.equal(outlineMap.data.format, "outline");
+  assert.match(outlineMap.data.map, /^EPIC 1\. Auth {2}█████░░░░░ 50% \(2\/4\)\n/);
+  // The map needs no criteria, so it reads neither descriptions nor checklists.
+  assert.deepEqual(sent.map((r) => r.path).sort(), ["/1/boards/BX", "/1/boards/BX/cards", "/1/boards/BX/lists"]);
+  assert.doesNotMatch(sent.find((r) => r.path.endsWith("/cards")).params.fields, /desc/);
+  const flow = await call("getBoardMap", { format: "mermaid", epic: "1", depth: 2 });
+  assert.match(flow.data.map, /^flowchart TD/);
+  assert.match(flow.data.map, /n1_1\[/);
+  assert.doesNotMatch(flow.data.map, /n1_1_1\[/, "depth 2 stops at stories");
+  assert.doesNotMatch(flow.data.map, /n2\[/, "epic 1 only");
+  for (const [args, pattern] of [
+    [{ format: "svg" }, /format must be one of "outline", "mermaid", got "svg"/],
+    [{ depth: 0 }, /depth must be a whole number of 1 or more/],
+    [{ depth: 1.5 }, /depth must be a whole number of 1 or more/],
+    [{ epic: "40" }, /No card numbered "40"/],
+  ]) {
+    const bad = await call("getBoardMap", args);
+    assert.equal(bad.isError, true, JSON.stringify(args));
+    assert.match(bad.text, pattern);
+  }
+
+  // A board with no numbered cards says what the tools look for, rather than printing 0%.
+  mockCards = [{ id: "z", name: "Fix the printer", idList: "L1" }];
+  const empty = await call("getStatusReport");
+  assert.equal(empty.isError, true);
+  assert.match(empty.text, /No numbered cards on this board \(1 cards, none named like "EPIC 1\./);
+}
+
+// ---------------------------------------------------------------------------
+// Outcome audit: is "Done" backed by something on the card? All data below is invented.
+{
+  // Evidence, part 1: what counts as a pull-request link. Only the URL is read.
+  for (const url of [
+    "https://github.com/acme/web/pull/42",
+    "https://github.com/acme/web/pull/42/files?diff=split#r1",
+    "https://gitlab.com/acme/group/web/-/merge_requests/7",
+    "https://bitbucket.org/acme/web/pull-requests/3",
+    "https://dev.azure.com/acme/proj/_git/web/pullrequest/9",
+    "https://git.example.test/acme/web/pull/12",
+  ]) assert.equal(hasPullRequest([{ url }]), true, url);
+  for (const url of [
+    "https://github.com/acme/web/issues/42",
+    "https://github.com/acme/web/pull/",
+    "https://github.com/acme/web/pulls",
+    "https://github.com/acme/web/commit/abc123",
+    "https://trello.com/c/AbCd1234/12-card",
+    "https://files.example.test/spec.pdf",
+    "ftp://git.example.test/acme/web/pull/12",
+    "not a url",
+    undefined,
+  ]) assert.equal(hasPullRequest([{ url }]), false, String(url));
+  assert.equal(hasPullRequest([]), false);
+  assert.equal(hasPullRequest(undefined), false);
+  assert.equal(hasPullRequest([{ url: "https://files.example.test/a.pdf" }, { url: "https://github.com/acme/web/pull/1" }]), true);
+
+  // Evidence, part 2: a comment that says "deployed". A sentence that denies it, defers
+  // it or asks about it is not proof, so each of those is read as no.
+  for (const yes of [
+    "Deployed to staging.",
+    "deployed",
+    "Merged, then deployed on Friday.",
+    "DEPLOYED to prod",
+    "Fixed the typo. Deployed after lunch.",
+    // "once"/"when" followed by something that already happened is a done deploy.
+    "Deployed to production once QA signed off.",
+    "Deployed when the tests passed.",
+    // "needed" in a past-tense note does not defer anything.
+    "Deployed; no further changes needed.",
+    // Other ways a team says the same thing.
+    "Released to customers on Friday.",
+    "Shipped in v2.4.",
+    "Rolled out to all users.",
+    "The feature went live this morning.",
+    "Live in production since 9am.",
+    // A condition or follow-up in a later clause belongs to that clause, not to the deploy.
+    "Deployed to production, ping me if anything breaks.",
+    "Released v3; docs should follow.",
+  ]) assert.equal(isDeployedComment(yes), true, yes);
+  for (const no of [
+    "Not deployed yet, waiting for the release window.",
+    "It will be deployed tomorrow.",
+    "Can't be deployed until review is done.",
+    "Ready to be deployed.",
+    "Is it deployed?",
+    "Not deployed. Looks fine.",
+    "Looks good to me.",
+    "undeployed",
+    // "once"/"when" in front of something still to come is a deferral.
+    "Deployed when the release window opens.",
+    "Gets deployed once the window opens.",
+    "Deployed, then rolled back.",
+    // The new wordings are held to the same standard as "deployed".
+    "Not released yet.",
+    "Will be shipped next sprint.",
+    "Is it live in production?",
+    "Release is still unreleased.",
+    "Shipped, then reverted.",
+    // A condition before the deploy still makes it no proof.
+    "If QA passes, deployed tonight.",
+    "",
+    undefined,
+  ]) assert.equal(isDeployedComment(no), false, String(no));
+
+  // The newest comment about the deploy decides: a rollback after "deployed" takes the
+  // proof back, and a fresh "deployed" after the rollback restores it.
+  const at = (text, day) => ({ text, date: `2026-11-0${day}T10:00:00.000Z` });
+  assert.equal(hasDeployedProof([at("Deployed to production.", 1)]), true);
+  assert.equal(hasDeployedProof([at("Rolled back, it broke checkout.", 2), at("Deployed to production.", 1)]), false);
+  assert.equal(hasDeployedProof([at("Deployed to production.", 1), at("Reverted the release.", 2)]), false, "order of the array does not matter");
+  assert.equal(hasDeployedProof([at("Deployed again with the fix.", 3), at("Rolled back.", 2), at("Deployed.", 1)]), true);
+  assert.equal(hasDeployedProof([at("Looks good.", 2), at("Deployed.", 1)]), true, "an unrelated newer comment changes nothing");
+  // Inside one comment the last sentence about the deploy decides.
+  assert.equal(hasDeployedProof([at("Rolled back v2.0 on Monday. Deployed v2.1 to production today.", 1)]), true);
+  assert.equal(hasDeployedProof([at("Deployed v2.1. Rolled back an hour later.", 1)]), false);
+  assert.equal(hasDeployedProof([]), false);
+  assert.equal(hasDeployedProof(undefined), false);
+
+  // Evidence, part 3: a Definition of Done checklist with every item ticked. Missing
+  // state is not a tick, and every such checklist on the card must be ticked.
+  const dod = (states, name = "Definition of Done") => [{ name, checkItems: states.map((state) => ({ name: "x", state })) }];
+  assert.equal(hasTickedDod(dod(["complete", "complete"])), true);
+  assert.equal(hasTickedDod(dod(["complete"], "DoD")), true);
+  assert.equal(hasTickedDod(dod(["complete"], "Team definition of done")), true);
+  assert.equal(hasTickedDod(dod(["complete", "incomplete"])), false);
+  assert.equal(hasTickedDod(dod([])), false);
+  assert.equal(hasTickedDod(dod(["complete"], "Release notes")), false);
+  assert.equal(hasTickedDod(dod(["complete"], "Methodology")), false);
+  assert.equal(hasTickedDod([{ name: "Definition of Done", checkItems: [{ name: "a" }] }]), false);
+  assert.equal(hasTickedDod([...dod(["complete"]), ...dod(["incomplete"])]), false);
+  assert.equal(hasTickedDod(undefined), false);
+
+  // The "one sentence" half of the Blocked rule.
+  for (const yes of [
+    "Waiting for the vendor API key.",
+    "Waiting for api.example.test to be fixed",
+    "  Blocked on legal review!  ",
+    // A full stop after an abbreviation does not end the sentence.
+    "Waiting on Acme Inc. to sign the contract.",
+    "Needs a decision from Dr. Kaya.",
+    "Waiting on design, e.g. the new icons.",
+  ]) {
+    assert.equal(isOneSentence(yes), true, yes);
+  }
+  for (const no of [
+    "Vendor is down. Retry Monday.",
+    "Waiting on legal.\nWill ask again Friday.",
+    "Waiting on Acme Inc.\nRetry Monday.",
+    "",
+    "   ",
+    undefined,
+  ]) {
+    assert.equal(isOneSentence(no), false, String(no));
+  }
+
+  // The rule is written once, in code, and printed with every audit.
+  assert.deepEqual(TEAM_RULE.map((r) => r.id), ["pull-request", "criteria-ticked", "blocked"]);
+  assert.deepEqual(EVIDENCE.map((e) => e.id), ["pull-request", "deployed-comment", "definition-of-done"]);
+  assert.equal(Object.isFrozen(EVIDENCE), true);
+  assert.equal(Object.isFrozen(TEAM_RULE), true);
+
+  // --- The fixture board ---------------------------------------------------
+  const AC = "- **Given** a user\n  **When** they act\n  **Then** it works";
+  const lists = { L1: "Backlog", L2: "Doing", L3: "Done" };
+  const PR = [{ url: "https://github.com/acme/web/pull/42" }];
+  const blocked = [{ name: "Blocked" }];
+  const fixtureCards = () => [
+    { id: "e1", name: "EPIC 1. Auth", idList: "L1" },
+    { id: "s11", name: "1.1. Login", idList: "L1", desc: AC },
+    { id: "t111", name: "1.1.1. Form", idList: "L3", attachments: PR },
+    { id: "t112", name: "1.1.2. API", idList: "L3", attachments: [] },
+    { id: "s12", name: "1.2. Reset password", idList: "L1", desc: AC },
+    { id: "t121", name: "1.2.1. Email", idList: "L3" },
+    { id: "t122", name: "1.2.2. Page", idList: "L3" },
+    { id: "s13", name: "1.3. Profile", idList: "L1", desc: AC },
+    { id: "t131", name: "1.3.1. Avatar", idList: "L3" },
+    { id: "t132", name: "1.3.2. Bio", idList: "L3" },
+    { id: "e2", name: "EPIC 2. Reports", idList: "L1" },
+    { id: "s21", name: "2.1. Export", idList: "L1", desc: AC },
+    { id: "t211", name: "2.1.1. CSV", idList: "L2", labels: blocked, idMembers: ["m1"] },
+    { id: "t212", name: "2.1.2. PDF", idList: "L2", labels: blocked, idMembers: [] },
+    { id: "t213", name: "2.1.3. XLSX", idList: "L2", labels: blocked, idMembers: ["m1", "m2"] },
+    { id: "s22", name: "2.2. Archive", idList: "L1", desc: AC },
+    { id: "t221", name: "2.2.1. Old reports", idList: "L3", attachments: PR },
+    { id: "sep", name: "---", idList: "L1" },
+  ];
+  const fixtureChecklists = [
+    {
+      id: "k122",
+      idCard: "t122",
+      name: "Definition of Done",
+      checkItems: [{ name: "tests", state: "complete" }, { name: "docs", state: "complete" }],
+    },
+    {
+      id: "k221",
+      idCard: "t221",
+      name: "Acceptance Criteria",
+      checkItems: [{ name: "a", state: "complete" }, { name: "b", state: "incomplete" }],
+    },
+  ];
+  const comment = (id, card, text, date) => ({ id, date, data: { text, ...(card && { card: { id: card } }) } });
+  // Newest first, as Trello returns them. t213 has two comments: only the newest counts.
+  const fixtureComments = [
+    comment("a6", null, "Deployed everywhere.", "2026-11-05T11:00:00.000Z"),
+    comment("a5", "t213", "Vendor is down. Retry Monday.", "2026-11-05T10:00:00.000Z"),
+    comment("a4", "t132", "Not deployed yet, waiting for the release window.", "2026-11-04T10:00:00.000Z"),
+    comment("a3", "t211", "Waiting for the finance team to approve the format.", "2026-11-03T10:00:00.000Z"),
+    comment("a2", "t121", "Looks good to me.", "2026-11-02T10:00:00.000Z"),
+    comment("a1", "t112", "Deployed to staging.", "2026-11-01T10:00:00.000Z"),
+    comment("a0", "t213", "Waiting on the vendor.", "2026-10-31T10:00:00.000Z"),
+  ];
+
+  // Moves and creations, newest first, as Trello returns them. Only putting a card in a Done
+  // list starts the clock, and the newest one wins: t131 was Done 20 days ago, went back to
+  // Doing, and has been Done again for 9 days. t132 was created straight into Done.
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000 - 3600000).toISOString();
+  const move = (id, card, to, date) => ({ id, type: "updateCard", date, data: { card: { id: card }, listAfter: { id: "x", name: to } } });
+  const created = (id, card, inList, date) => ({ id, type: "createCard", date, data: { card: { id: card }, list: { id: "x", name: inList } } });
+  const fixtureMoves = [
+    move("m4", "t211", "Doing", daysAgo(2)),
+    move("m3", "t121", "Done", daysAgo(3)),
+    move("m2", "t131", "Done", daysAgo(9)),
+    move("m1", "t131", "Doing", daysAgo(15)),
+    move("m0", "t131", "Done", daysAgo(20)),
+    created("c1", "t132", "Done", daysAgo(12)),
+  ];
+
+  // Over the real dispatch path with a mocked board, recording every request.
+  let actionPages = () => fixtureComments;
+  let movePages = () => fixtureMoves;
+  let mockCards = fixtureCards();
+  const sent = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    sent.push({ method: opts.method ?? "GET", path: u.pathname, params: Object.fromEntries(u.searchParams) });
+    const bodies = {
+      "/1/boards/BX": () => ({ name: "Acme delivery" }),
+      "/1/boards/BX/lists": () => Object.entries(lists).map(([id, name]) => ({ id, name })),
+      "/1/boards/BX/cards": () => mockCards,
+      "/1/boards/BX/checklists": () => fixtureChecklists,
+      "/1/boards/BX/actions": () => {
+        const params = Object.fromEntries(u.searchParams);
+        return params.filter === "commentCard" ? actionPages(params) : movePages(params);
+      },
+    };
+    return u.pathname in bodies
+      ? new Response(JSON.stringify(bodies[u.pathname]()), { status: 200 })
+      : new Response(`not mocked: ${u.pathname}`, { status: 404, statusText: "Not Found" });
+  };
+  const reqs = (filter) => sent.filter((r) => r.path.endsWith("/actions") && r.params.filter === filter);
+  const call = async (args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 9, method: "tools/call", params: { name: "getOutcomeAudit", arguments: { boardId: "BX", ...args } } });
+    return { ...r, data: r.isError ? null : JSON.parse(r.content[0].text), text: r.content[0].text };
+  };
+
+  const audit = await call({ format: "json" });
+  assert.notEqual(audit.isError, true, audit.text);
+  assert.equal(audit.data.board, "Acme delivery");
+  // The percentage everyone already reads, and the one next to it that has to be earned.
+  assert.deepEqual(audit.data.progress, { done: 7, total: 10, percent: 70 });
+  assert.deepEqual(audit.data.provenDone, { done: 4, total: 10, percent: 40 });
+  assert.deepEqual(
+    audit.data.items.map((i) => [i.number, i.done, i.total, i.percent, i.provenDone, i.provenPercent]),
+    [["1", 6, 6, 100, 3, 50], ["2", 1, 4, 25, 1, 25]],
+  );
+  // Evidence of any one kind is enough: a PR (1.1.1), a "deployed" comment (1.1.2), a
+  // ticked Definition of Done (1.2.2). A denial ("Not deployed yet") and a bare "Looks
+  // good" are not. A comment with no card is ignored.
+  // Story 1.3 looks ready for sign-off (every item is Done) and none of its items has
+  // evidence. Story 1.1 has evidence on one of its two items, so it is not listed.
+  assert.deepEqual(audit.data.unprovenSignOff, { count: 1, items: [{ number: "1.3", name: "1.3. Profile", workItems: 2 }] });
+  // The team rule, applied the same way to every card.
+  assert.deepEqual(audit.data.ruleBreaks.doneWithoutPullRequest.items.map((c) => c.number), ["1.1.2", "1.2.1", "1.2.2", "1.3.1", "1.3.2"]);
+  assert.equal(audit.data.ruleBreaks.doneWithoutPullRequest.count, 5);
+  assert.deepEqual(audit.data.ruleBreaks.doneWithOpenCriteria, {
+    count: 1,
+    items: [{ number: "2.2.1", name: "2.2.1. Old reports", open: 1 }],
+  });
+  assert.deepEqual(audit.data.ruleBreaks.blockedIncomplete, {
+    count: 2,
+    items: [
+      { number: "2.1.2", name: "2.1.2. PDF", problems: ["no member", "no reason"] },
+      { number: "2.1.3", name: "2.1.3. XLSX", problems: ["more than one member", "reason is more than one sentence"] },
+    ],
+  });
+  assert.deepEqual(audit.data.rule, TEAM_RULE);
+  assert.deepEqual(audit.data.evidence, EVIDENCE);
+  assert.deepEqual(audit.data.warnings, {
+    duplicateNumbers: 0,
+    orphans: 0,
+    possiblyTruncated: false,
+    commentsPossiblyTruncated: false,
+    movesPossiblyTruncated: false,
+  });
+
+  // Done cards with nothing to show for it, longest waiting first. The clock starts when the
+  // card was last put in a Done list, by a move or by being created there.
+  assert.deepEqual(audit.data.waiting, {
+    count: 3,
+    items: [
+      { number: "1.3.2", name: "1.3.2. Bio", days: 12 },
+      { number: "1.3.1", name: "1.3.1. Avatar", days: 9 },
+      { number: "1.2.1", name: "1.2.1. Email", days: 3 },
+    ],
+  });
+
+  // Read-only on the wire: only GETs, and the comment/attachment/member fields it needs.
+  assert.equal(sent.every((r) => r.method === "GET"), true, "getOutcomeAudit must only read");
+  assert.deepEqual(
+    [...new Set(sent.map((r) => r.path))].sort(),
+    ["/1/boards/BX", "/1/boards/BX/actions", "/1/boards/BX/cards", "/1/boards/BX/checklists", "/1/boards/BX/lists"],
+  );
+  const cardsReq = sent.find((r) => r.path.endsWith("/cards")).params;
+  assert.equal(cardsReq.attachments, "true");
+  assert.equal(cardsReq.attachment_fields, "url");
+  assert.match(cardsReq.fields, /\bidMembers\b/);
+  assert.deepEqual(
+    [...new Set(sent.filter((r) => r.path.endsWith("/actions")).map((r) => r.params.filter))].sort(),
+    ["commentCard", "createCard,updateCard:idList,updateCard:dueComplete"],
+  );
+  assert.equal(sent.find((r) => r.path.endsWith("/checklists")).params.checkItem_fields, "name,state");
+
+  // Nothing a person wrote and nobody's id comes back: counts and card names only.
+  for (const secret of ["finance team", "Vendor is down", "release window", "Deployed to staging", "m1", "m2"]) {
+    assert.equal(audit.text.includes(secret), false, `${secret} leaked into the result`);
+  }
+
+  // The markdown a person would paste.
+  const md = await call();
+  assert.notEqual(md.isError, true, md.text);
+  assert.equal(md.data.format, "markdown");
+  assert.match(md.data.report, /^# Outcome audit: Acme delivery/);
+  assert.match(md.data.report, /\*\*70% in Done\. 40% with evidence\.\*\*/);
+  assert.match(md.data.report, /7 of 10 work items sit in Done; 4 of them show evidence\./);
+  assert.match(md.data.report, /## Sign-off without evidence\n- \*\*1\.3\. Profile\*\*: all 2 work items are Done, none shows evidence/);
+  assert.match(
+    md.data.report,
+    /## Done without evidence, longest waiting\n- \*\*1\.3\.2\. Bio\*\*: 12 days in Done\n- \*\*1\.3\.1\. Avatar\*\*: 9 days in Done\n- \*\*1\.2\.1\. Email\*\*: 3 days in Done/,
+  );
+  assert.match(md.data.report, /Done without a pull request \(5\)/);
+  assert.match(md.data.report, /Done with acceptance criteria not ticked \(1\):\*\* 2\.2\.1\. Old reports, 1 open/);
+  assert.match(md.data.report, /Blocked without exactly one member and one sentence \(2\):\*\* 2\.1\.2\. PDF \(no member, no reason\)/);
+  assert.match(md.data.report, /## The rule/);
+  for (const r of TEAM_RULE) assert.ok(md.data.report.includes(r.text), `rule line missing: ${r.id}`);
+  for (const e of EVIDENCE) assert.ok(md.data.report.includes(e.text), `evidence line missing: ${e.id}`);
+  assert.equal(md.text.includes("finance team"), false);
+
+  // The rule reads the same on every call, whatever else the caller asks for.
+  const scopedJson = await call({ epic: "2", format: "json" });
+  assert.deepEqual(scopedJson.data.rule, audit.data.rule);
+
+  // Scoping: one epic, one story.
+  assert.deepEqual(scopedJson.data.progress, { done: 1, total: 4, percent: 25 });
+  assert.deepEqual(scopedJson.data.provenDone, { done: 1, total: 4, percent: 25 });
+  assert.equal(scopedJson.data.unprovenSignOff.count, 0);
+  assert.equal(scopedJson.data.ruleBreaks.blockedIncomplete.count, 2);
+  const story = await call({ epic: "1.3", format: "json" });
+  assert.deepEqual(story.data.progress, { done: 2, total: 2, percent: 100 });
+  assert.deepEqual(story.data.provenDone, { done: 0, total: 2, percent: 0 });
+  assert.equal(story.data.unprovenSignOff.count, 1);
+
+  // Nothing in a Done list means nothing is proven and nothing is waiting for sign-off.
+  const noneDone = await call({ doneLists: ["Live"], format: "json" });
+  assert.deepEqual(noneDone.data.progress, { done: 0, total: 10, percent: 0 });
+  assert.deepEqual(noneDone.data.provenDone, { done: 0, total: 10, percent: 0 });
+  assert.equal(noneDone.data.unprovenSignOff.count, 0);
+
+  // Done with evidence can never exceed done: a card with evidence that is not in Done does not count.
+  mockCards = fixtureCards().map((c) => (c.id === "t131" ? { ...c, idList: "L2", attachments: PR } : c));
+  const early = await call({ format: "json" });
+  assert.deepEqual(early.data.progress, { done: 6, total: 10, percent: 60 });
+  assert.deepEqual(early.data.provenDone, { done: 4, total: 10, percent: 40 });
+  // Story 1.3 is no longer complete, so it no longer looks ready.
+  assert.equal(early.data.unprovenSignOff.count, 0);
+  mockCards = fixtureCards();
+
+  // Comments are read a full page at a time, newest first, following `before`. A
+  // "deployed" comment on the second page still counts.
+  const filler = (page) => Array.from({ length: 1000 }, (_, i) => comment(`p${page}-${i}`, "nobody", "noise", "2026-10-01T00:00:00.000Z"));
+  actionPages = ({ before }) =>
+    before ? [...fixtureComments, comment("old", "t121", "Deployed on Tuesday.", "2026-09-01T00:00:00.000Z")] : filler(0);
+  const paged = await call({ format: "json" });
+  const actionReqs = reqs("commentCard");
+  assert.equal(actionReqs.length, 2);
+  assert.equal(actionReqs[0].params.before, undefined);
+  assert.equal(actionReqs[1].params.before, "p0-999");
+  assert.equal(paged.data.provenDone.done, 5, "1.2.1 is proven by a comment on page two");
+  assert.equal(paged.data.warnings.commentsPossiblyTruncated, false);
+
+  // A board with endless comments stops at a cap and says the answer may be incomplete,
+  // instead of looping or claiming certainty.
+  actionPages = ({ before }) => filler(before ? Number(before.slice(1).split("-")[0]) + 1 : 0);
+  const endless = await call();
+  assert.equal(reqs("commentCard").length, 10);
+  assert.match(endless.data.report, /_Note: .*comments.*may be incomplete/);
+
+  // If Trello ignored `before` and served the first page again, the read stops at once and
+  // says it is incomplete, instead of counting the same comments ten times.
+  actionPages = () => filler(0);
+  const repeated = await call({ format: "json" });
+  assert.equal(reqs("commentCard").length, 2);
+  assert.equal(repeated.data.warnings.commentsPossiblyTruncated, true);
+  actionPages = () => fixtureComments;
+
+  // The same guard for card moves: a repeated first page stops the read and is reported, and
+  // the waiting times that could not be read come back without an age instead of a wrong one.
+  movePages = () => Array.from({ length: 1000 }, (_, i) => move(`q${i}`, "nobody", "Backlog", daysAgo(1)));
+  const movesRepeated = await call({ format: "json" });
+  assert.equal(reqs("createCard,updateCard:idList,updateCard:dueComplete").length, 2);
+  assert.equal(movesRepeated.data.warnings.movesPossiblyTruncated, true);
+  assert.equal(movesRepeated.data.waiting.items.every((w) => w.days === null), true);
+  const movesNote = await call();
+  assert.match(movesNote.data.report, /_Note: .*card moves.*waiting times may be missing/);
+  assert.match(movesNote.data.report, /\*\*1\.2\.1\. Email\*\*: no date found for when it became Done/);
+  movePages = () => fixtureMoves;
+
+  // Where a card sits now is its newest list action. t131 was moved into Done 9 days ago but
+  // out to Doing 5 days ago, so that old move no longer starts its clock; it still counts as
+  // Done because its due date is ticked, and that tick (4 days ago) is when it became Done.
+  const ticked = (id, card, date) => ({ id, type: "updateCard", date, data: { card: { id: card, dueComplete: true }, old: { dueComplete: false } } });
+  mockCards = fixtureCards().map((c) => (c.id === "t131" ? { ...c, idList: "L2", dueComplete: true } : c));
+  movePages = () => [ticked("d1", "t131", daysAgo(4)), move("m5", "t131", "Doing", daysAgo(5)), ...fixtureMoves];
+  const byTick = await call({ format: "json" });
+  assert.deepEqual(byTick.data.waiting.items.find((w) => w.number === "1.3.1"), { number: "1.3.1", name: "1.3.1. Avatar", days: 4 });
+  movePages = () => [move("m5", "t131", "Doing", daysAgo(5)), ...fixtureMoves];
+  const leftDone = await call({ format: "json" });
+  assert.equal(leftDone.data.waiting.items.find((w) => w.number === "1.3.1").days, null, "an old move into Done is not used once the card left");
+  movePages = () => fixtureMoves;
+  mockCards = fixtureCards();
+
+  // A story whose work items are all Done is listed when none shows evidence, even if it has
+  // no acceptance criteria at all.
+  mockCards = fixtureCards().map((c) => (c.id === "s13" ? { ...c, desc: "" } : c));
+  const noCriteria = await call({ format: "json" });
+  assert.deepEqual(noCriteria.data.unprovenSignOff.items.map((s) => s.number), ["1.3"]);
+  mockCards = fixtureCards();
+
+  // A card whose parent is missing is in the totals but not a row, and the headline says so.
+  assert.equal(audit.data.missingParent, 0);
+  mockCards = [...fixtureCards(), { id: "o1", name: "9.9.1. Orphan", idList: "L3", attachments: PR }];
+  const orphaned = await call();
+  assert.match(orphaned.data.report, /8 of 11 work items sit in Done; 5 of them show evidence\. The totals include 1 card whose parent is missing, which is not a row of the table\./);
+  mockCards = fixtureCards();
+
+  // Nothing waiting: the section says so instead of vanishing.
+  mockCards = fixtureCards().map((c) => (["t121", "t131", "t132"].includes(c.id) ? { ...c, attachments: PR } : c));
+  const clean = await call();
+  assert.match(clean.data.report, /## Done without evidence, longest waiting\nEvery Done card shows evidence\./);
+  assert.equal(reqs("createCard,updateCard:idList,updateCard:dueComplete").length, 0, "no history read when nothing waits");
+  mockCards = fixtureCards();
+
+  // Card names are shown as text in the markdown lists, not read as formatting.
+  mockCards = fixtureCards().map((c) => (c.id === "t132" ? { ...c, name: "1.3.2. *Bio* [draft]" } : c));
+  const escaped = await call();
+  assert.ok(escaped.data.report.includes("1.3.2. \\*Bio\\* \\[draft\\]"), escaped.data.report);
+  mockCards = fixtureCards();
+
+  // Work that never has a pull request: a Done card with an exempt label is not listed for the
+  // missing one (label match ignores case), the rule says so, and nothing else about it changes.
+  const design = (c) => (c.id === "t131" ? { ...c, labels: [{ name: "Design" }] } : c);
+  mockCards = fixtureCards().map(design);
+  const plain = await call({ format: "json" });
+  assert.equal(plain.data.ruleBreaks.doneWithoutPullRequest.count, 5, "no exemption by default");
+  assert.deepEqual(plain.data.exemptLabels, []);
+  const exempt = await call({ format: "json", exemptLabels: [" design "] });
+  assert.equal(exempt.data.ruleBreaks.doneWithoutPullRequest.count, 4);
+  assert.equal(exempt.data.ruleBreaks.doneWithoutPullRequest.items.some((c) => c.number === "1.3.1"), false);
+  assert.deepEqual(exempt.data.exemptLabels, ["design"]);
+  assert.deepEqual(exempt.data.provenDone, plain.data.provenDone, "evidence is not changed by an exemption");
+  assert.deepEqual(exempt.data.unprovenSignOff, plain.data.unprovenSignOff);
+  const exemptMd = await call({ exemptLabels: ["Design", "Docs"] });
+  assert.match(exemptMd.data.report, /Done without a pull request \(4\)/);
+  assert.match(exemptMd.data.report, /- Cards labelled design, docs are not asked for a pull request\./);
+  assert.equal((await call()).data.report.includes("are not asked for a pull request"), false);
+  mockCards = fixtureCards();
+
+  // A card that is Done and Blocked at once is named, not silently resolved: the numbers still
+  // follow the status report's rule, and the report says one of the two is out of date.
+  mockCards = fixtureCards().map((c) => (c.id === "t131" ? { ...c, labels: blocked } : c));
+  const both = await call({ format: "json" });
+  assert.deepEqual(both.data.inconsistent.doneAndBlocked, { count: 1, items: [{ number: "1.3.1", name: "1.3.1. Avatar" }] });
+  assert.equal(both.data.progress.done, 7, "still counted as Done, like the status report");
+  assert.match((await call()).data.report, /## Cards that say two things\n- \*\*Counted as Done but also Blocked \(1\):\*\* 1\.3\.1\. Avatar\./);
+  mockCards = fixtureCards();
+  assert.deepEqual((await call({ format: "json" })).data.inconsistent.doneAndBlocked, { count: 0, items: [] });
+  assert.equal((await call()).data.report.includes("Cards that say two things"), false);
+
+  // Arguments are checked before any request goes out.
+  for (const [args, pattern] of [
+    [{ epic: "9" }, /No card numbered "9" on this board\. Top-level numbers: 1, 2\./],
+    [{ format: "pdf" }, /format must be one of "markdown", "json", got "pdf"/],
+    [{ doneLists: "Done" }, /doneLists for getOutcomeAudit must be array, got string/],
+    [{ exemptLabels: "Design" }, /exemptLabels for getOutcomeAudit must be array, got string/],
+    [{ exemptLabels: ["Design", 7] }, /exemptLabels for getOutcomeAudit must be an array of string, but index 1 is number/],
+    [{ staleDays: 7 }, /Unknown argument for getOutcomeAudit: staleDays/],
+  ]) {
+    const bad = await call(args);
+    assert.equal(bad.isError, true, JSON.stringify(args));
+    assert.match(bad.text, pattern);
+  }
+
+  // A board with no numbered cards says what the tool looks for, rather than printing 0%.
+  mockCards = [{ id: "z", name: "Fix the printer", idList: "L1" }];
+  const empty = await call();
+  assert.equal(empty.isError, true);
+  assert.match(empty.text, /No numbered cards on this board/);
+  mockCards = fixtureCards();
+
+  // Pure layer: the same facts in, the same audit out, and the first of two cards that
+  // share a number is the one read, as in the status report.
+  const dupes = indexFacts(
+    [
+      { id: "d1", name: "1.1.1. Twin", attachments: PR },
+      { id: "d2", name: "1.1.1. Twin again" },
+    ],
+    {},
+    new Map(),
+  );
+  assert.equal(dupes.size, 1);
+  assert.equal(dupes.get("1.1.1").pullRequest, true);
+  const tree = buildTree({ cards: fixtureCards(), lists, checklists: { t122: [fixtureChecklists[0]], t221: [fixtureChecklists[1]] } });
+  const facts = indexFacts(fixtureCards(), { t122: [fixtureChecklists[0]], t221: [fixtureChecklists[1]] }, new Map());
+  const pure = buildOutcomeAudit(tree.roots, facts);
+  assert.deepEqual(pure.progress, { done: 7, total: 10, percent: 70 });
+  // No comments were passed here, so the "deployed" card (1.1.2) is the one that drops out.
+  assert.deepEqual(pure.provenDone, { done: 3, total: 10, percent: 30 });
+  assert.match(renderOutcomeAudit("B", pure, { now: Date.parse("2026-11-07T00:00:00Z") }), /^# Outcome audit: B\n_2026-11-07_/);
+}
+
+// ---------------------------------------------------------------------------
+// Done-path audit: how did the Done cards get there? All data below is invented.
+{
+  const at = (min) => new Date(Date.parse("2026-10-01T09:00:00Z") + min * 60_000).toISOString();
+  const ev = (cardId, min, from, to, by = "m1") => ({ cardId, at: at(min), from, to, by });
+  const card = (id, name, listName, idMembers = []) => ({ id, name, listName, idMembers });
+  const cards = [
+    card("a", "1.1.1. Full path", "Done", ["m2"]),
+    card("b", "1.1.2. Straight to Done", "Done(Sprint 2)", ["m9"]),
+    card("c", "1.1.3. Skips review", "Done", ["m3"]),
+    card("d", "1.1.4. Logged afterwards", "Done"),
+    card("e", "1.1.5. History out of reach", "Done"),
+    card("f1", "1.2.1. Batch one", "Done", ["m1"]),
+    card("f2", "1.2.2. Batch two", "Done", ["m2"]),
+    card("f3", "1.2.3. Batch three", "Done", ["m2"]),
+    card("f4", "1.2.4. Batch four", "Done", ["m2"]),
+    card("f5", "1.2.5. Batch five", "Done", ["m2"]),
+    card("g", "1.3.1. Still open", "In Progress", ["m1"]),
+  ];
+  const events = [
+    ev("a", 0, null, "Backlog", "m2"), ev("a", 1, "Backlog", "In Progress", "m2"),
+    ev("a", 2, "In Progress", "Testing/Review", "m2"), ev("a", 3, "Testing/Review", "Done", "m2"),
+    ev("b", 0, null, "Backlog"), ev("b", 60, "Backlog", "Done(Sprint 2)"),
+    ev("c", 0, null, "Backlog", "m3"), ev("c", 1, "Backlog", "In Progress", "m3"), ev("c", 120, "In Progress", "Done", "m3"),
+    ev("d", 180, null, "Done"),
+    ...["f1", "f2", "f3", "f4", "f5"].flatMap((id, i) => [
+      ev(id, 0, null, "Backlog"), ev(id, 1, "Backlog", "In Progress"),
+      ev(id, 2, "In Progress", "Testing/Review"), ev(id, 300 + i, "Testing/Review", "Done"),
+    ]),
+    ev("g", 0, null, "Backlog"), ev("g", 1, "Backlog", "In Progress"),
+  ];
+  const audit = buildDonePathAudit({ cards, events });
+  assert.equal(audit.doneCards, 10);
+  assert.equal(audit.noHistory, 1, "e has no events at all, so it is not judged");
+  assert.equal(audit.createdInDone, 1, "d was created in Done: logged afterwards, not a skipped stage");
+  assert.deepEqual(audit.skipped.progress, 1);
+  assert.deepEqual(audit.skipped.review, 2);
+  assert.deepEqual(audit.skipped.both, { count: 1, items: [{ name: "1.1.2. Straight to Done" }] });
+  // Moves into Done from somewhere else: a, b, c and the five batch cards.
+  assert.equal(audit.doneMoves, 8);
+  // Five cards by the same mover, a minute apart, is one burst; b's lone move an hour earlier is not.
+  assert.deepEqual(audit.bursts, { count: 1, cards: 5, largest: 5, percent: 62 });
+  // a, c and f1 were moved by one of the card's own members; b and f2..f5 were not.
+  assert.deepEqual(audit.movedByAssignee, { count: 3, of: 8 });
+  assert.deepEqual(audit.settings, { burstSize: 5, burstMinutes: 5, progressLists: ["In Progress"], reviewLists: ["Testing/Review", "Testing", "Review", "QA"] });
+  // No person leaves the module: not a member id, not a mover id.
+  assert.equal(/\bm[0-9]\b/.test(JSON.stringify(audit)), false, "no member ids in the result");
+
+  // The same moves, spread over more than five minutes apart, are not a burst; so is a smaller burstSize honoured.
+  const spaced = events.map((e) => (e.to === "Done" && e.cardId.startsWith("f") ? { ...e, at: at(300 + Number(e.cardId[1]) * 10) } : e));
+  assert.equal(buildDonePathAudit({ cards, events: spaced }).bursts.count, 0);
+  assert.equal(buildDonePathAudit({ cards, events, burstSize: 6 }).bursts.count, 0);
+  // Mover ids missing (history read without them): nothing is called a burst and no mover is compared.
+  const anon = buildDonePathAudit({ cards, events: events.map((e) => ({ ...e, by: null })) });
+  assert.equal(anon.bursts.count, 0);
+  assert.deepEqual(anon.movedByAssignee, { count: 0, of: 0 });
+  // Created in Done by mistake, moved out, then dragged straight back: its path is judged, not excused.
+  const back = buildDonePathAudit({
+    cards: [card("h", "1.4.1. Back again", "Done")],
+    events: [ev("h", 0, null, "Done"), ev("h", 1, "Done", "Backlog"), ev("h", 2, "Backlog", "Done")],
+  });
+  assert.equal(back.createdInDone, 0);
+  assert.equal(back.skipped.both.count, 1);
+
+  const md = renderDonePathAudit("Acme", audit, { now: Date.parse("2026-11-07T00:00:00Z") });
+  assert.match(md, /^# Done-path audit: Acme\n_2026-11-07_/);
+  assert.match(md, /10 cards sit in Done/);
+  assert.match(md, /1 batch of 5 or more/);
+  assert.match(md, /1\.1\.2\\?\. Straight to Done/);
+  assert.match(md, /not a verdict/i);
+  // One card, not "1 were": the singular reads as a sentence.
+  assert.match(md, /- 1 was created straight in Done/);
+  assert.match(md, /- 1 has no history to read/);
+}
+
+// The tool over the real dispatch path with a mocked board. All data is invented.
+{
+  const lists = [{ id: "l1", name: "Backlog" }, { id: "l2", name: "In Progress" }, { id: "l3", name: "Testing/Review" }, { id: "l4", name: "Done" }];
+  const boardCards = [
+    { id: "x", name: "1.1.1. Full path", idList: "l4", idMembers: ["m1"] },
+    { id: "y", name: "1.1.2. Straight to Done", idList: "l4", idMembers: ["m9"] },
+    { id: "z", name: "1.1.3. Still open", idList: "l2", idMembers: [] },
+  ];
+  const act = (id, date, before, after, by) => ({
+    id: `a${date}${id}`, type: "updateCard", date, idMemberCreator: by,
+    data: { card: { id }, listBefore: { name: before }, listAfter: { name: after } },
+  });
+  const made = (id, date, list, by) => ({ id: `c${id}`, type: "createCard", date, idMemberCreator: by, data: { card: { id }, list: { name: list } } });
+  // Newest first, the way Trello returns them.
+  const history = [
+    act("y", "2026-10-01T11:00:00Z", "Backlog", "Done", "m2"),
+    act("x", "2026-10-01T10:30:00Z", "Testing/Review", "Done", "m1"),
+    act("x", "2026-10-01T10:00:00Z", "In Progress", "Testing/Review", "m1"),
+    act("x", "2026-10-01T09:30:00Z", "Backlog", "In Progress", "m1"),
+    made("z", "2026-10-01T09:20:00Z", "Backlog", "m1"),
+    made("y", "2026-10-01T09:10:00Z", "Backlog", "m2"),
+    made("x", "2026-10-01T09:00:00Z", "Backlog", "m1"),
+  ];
+  const sent = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    sent.push({ method: opts.method ?? "GET", path: u.pathname, params: Object.fromEntries(u.searchParams) });
+    const bodies = {
+      "/1/boards/BX": () => ({ name: "Acme delivery" }),
+      "/1/boards/BX/lists": () => lists,
+      "/1/boards/BX/cards": () => boardCards,
+      "/1/boards/BX/actions": () => (u.searchParams.get("before") ? [] : history),
+    };
+    return u.pathname in bodies
+      ? new Response(JSON.stringify(bodies[u.pathname]()), { status: 200 })
+      : new Response(`not mocked: ${u.pathname}`, { status: 404, statusText: "Not Found" });
+  };
+  const call = async (args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 9, method: "tools/call", params: { name: "getDonePathAudit", arguments: { boardId: "BX", ...args } } });
+    return { ...r, text: r.content[0].text, data: r.isError ? null : JSON.parse(r.content[0].text) };
+  };
+
+  const json = await call({ format: "json" });
+  assert.notEqual(json.isError, true, json.text);
+  assert.equal(json.data.board, "Acme delivery");
+  assert.equal(json.data.doneCards, 2);
+  assert.deepEqual(json.data.skipped, { progress: 1, review: 1, both: { count: 1, items: [{ name: "1.1.2. Straight to Done" }] } });
+  assert.deepEqual(json.data.bursts, { count: 0, cards: 0, largest: 0, percent: 0 });
+  // x was moved by its own member, y by someone who is not on the card.
+  assert.deepEqual(json.data.movedByAssignee, { count: 1, of: 2 });
+  assert.deepEqual(json.data.warnings, { movesPossiblyTruncated: false });
+  // No member id anywhere in what comes back.
+  assert.equal(/\bm[0-9]\b/.test(json.text), false);
+
+  // Read-only on the wire, and only the four reads it needs, with no descriptions or checklists.
+  assert.equal(sent.every((r) => r.method === "GET"), true, "getDonePathAudit must only read");
+  assert.deepEqual([...new Set(sent.map((r) => r.path))].sort(), ["/1/boards/BX", "/1/boards/BX/actions", "/1/boards/BX/cards", "/1/boards/BX/lists"]);
+  assert.equal(sent.find((r) => r.path.endsWith("/actions")).params.filter, "createCard,updateCard:idList");
+  assert.equal(/desc/.test(sent.find((r) => r.path.endsWith("/cards")).params.fields), false);
+
+  const md = await call();
+  assert.match(JSON.parse(md.text).report, /^# Done-path audit: Acme delivery/);
+
+  // Custom list names reach the audit: with "Testing/Review" no longer a review list, x skips review too.
+  const custom = await call({ format: "json", reviewLists: ["Sign-off"] });
+  assert.equal(custom.data.skipped.review, 2);
+
+  const bad = await call({ burstSize: 1 });
+  assert.equal(bad.isError, true);
+  assert.match(bad.text, /burstSize must be a whole number of 2 or more/);
+  // The schema states the whole-number rule itself, and a whole number still passes it.
+  const fraction = await call({ burstSize: 5.5 });
+  assert.equal(fraction.isError, true);
+  assert.match(fraction.text, /Argument burstSize for getDonePathAudit must be integer, got number/);
+  assert.notEqual((await call({ format: "json", burstSize: 5 })).isError, true);
+  const unknownArg = await call({ staleDays: 7 });
+  assert.equal(unknownArg.isError, true);
+  assert.match(unknownArg.text, /Unknown argument for getDonePathAudit: staleDays/);
+  const badFormat = await call({ format: "csv" });
+  assert.equal(badFormat.isError, true);
+}
+
+// ---------------------------------------------------------------------------
+// GitHub pull-request check: parsing a link, and asking GitHub whether it was merged.
+// Nothing here touches the network; fetch is injected. All data below is invented.
+{
+  assert.deepEqual(parseGitHubPr("https://github.com/acme/web/pull/42"), { owner: "acme", repo: "web", number: 42 });
+  assert.deepEqual(parseGitHubPr("https://github.com/acme/web.js/pull/7/files?diff=split#r1"), { owner: "acme", repo: "web.js", number: 7 });
+  assert.deepEqual(parseGitHubPr("https://www.github.com/acme/web/pull/42/"), { owner: "acme", repo: "web", number: 42 });
+  for (const url of [
+    "https://github.com/acme/web/issues/42",
+    "https://github.com/acme/web/pull/",
+    "https://github.com/acme/web/pull/x",
+    "https://github.com/acme/web/pulls",
+    "http://github.com/acme/web/pull/42",
+    "https://github.com.evil.test/acme/web/pull/42",
+    "https://evil.test/github.com/acme/web/pull/42",
+    "https://user@github.com/acme/web/pull/42",
+    "https://github.com/../web/pull/42",
+    "https://github.com/acme/../pull/42",
+    "https://github.com/acme/web/pull/99999999999999999999",
+    "https://gitlab.com/acme/group/web/-/merge_requests/7",
+    "not a url",
+    undefined,
+  ]) assert.equal(parseGitHubPr(url), null, String(url));
+
+  const TOKEN = "fake-token-123";
+  const asked = [];
+  const answers = {
+    "/repos/acme/web/pulls/1": [200, { merged: true, state: "closed" }],
+    "/repos/acme/web/pulls/2": [200, { merged: false, state: "open" }],
+    "/repos/acme/web/pulls/3": [200, { merged: false, state: "closed" }],
+    "/repos/acme/web/pulls/4": [404, { message: "Not Found" }],
+    "/repos/acme/web/pulls/5": [403, { message: "Forbidden" }],
+    "/repos/acme/web/pulls/7": [429, { message: "rate limit exceeded" }],
+    "/repos/acme/web/pulls/8": [502, { message: "Bad Gateway" }],
+  };
+  const fakeFetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    asked.push({ host: u.host, path: u.pathname, method: opts.method ?? "GET", headers: opts.headers });
+    if (u.pathname.endsWith("/pulls/6")) throw new Error(`network down for ${TOKEN}`);
+    const [status, body] = answers[u.pathname];
+    return new Response(JSON.stringify(body), { status });
+  };
+  const prs = [1, 2, 3, 4, 5, 6, 7, 8, 1].map((number) => ({ owner: "acme", repo: "web", number }));
+  const out = await checkPullRequests(prs, { token: TOKEN, fetchImpl: fakeFetch });
+  assert.deepEqual(
+    [...out.results].map(([k, v]) => [k, v.state, v.reason ?? null, v.category ?? null, v.retryable ?? null]),
+    [
+      ["acme/web#1", "merged", null, null, null],
+      ["acme/web#2", "open", null, null, null],
+      ["acme/web#3", "closed", null, null, null],
+      ["acme/web#4", "unverified", "not found or no access", "permission", false],
+      ["acme/web#5", "unverified", "refused by GitHub", "permission", false],
+      ["acme/web#6", "unverified", "could not reach GitHub", "transient", true],
+      ["acme/web#7", "unverified", "rate limited", "transient", true],
+      ["acme/web#8", "unverified", "GitHub error", "transient", true],
+    ],
+  );
+  assert.equal(out.notChecked, 0);
+  // A repeated link is asked about once; only api.github.com is called, read-only, with the token as a bearer header.
+  assert.equal(asked.length, 8);
+  assert.equal(asked.every((a) => a.host === "api.github.com" && a.method === "GET"), true);
+  assert.equal(asked[0].headers.Authorization, `Bearer ${TOKEN}`);
+  assert.equal(asked[0].headers.Accept, "application/vnd.github+json");
+  // The token is never part of what comes back, not even when a failure message carried it.
+  assert.equal(JSON.stringify([...out.results]).includes(TOKEN), false);
+
+  // More links than the limit: the rest are counted, not asked about.
+  asked.length = 0;
+  const limited = await checkPullRequests(prs.slice(0, 3), { token: TOKEN, fetchImpl: fakeFetch, limit: 2 });
+  assert.equal(limited.results.size, 2);
+  assert.equal(limited.notChecked, 1);
+  assert.equal(asked.length, 2);
+
+  // A request that never answers is cut off and reported, not waited for.
+  const hang = (url, opts) => new Promise((_, reject) => opts.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+  const slow = await checkPullRequests([prs[0]], { token: TOKEN, fetchImpl: hang, timeoutMs: 20 });
+  assert.equal(slow.results.get("acme/web#1").state, "unverified");
+  assert.equal(slow.results.get("acme/web#1").reason, "could not reach GitHub");
+
+  await assert.rejects(() => checkPullRequests(prs, { token: "", fetchImpl: fakeFetch }), /token is required/);
+
+  // A 200 that is not JSON (a proxy's HTML page) is an unexpected reply, not a network failure to retry.
+  const html = await checkPullRequests([prs[0]], { token: TOKEN, fetchImpl: async () => new Response("<html>login</html>", { status: 200 }) });
+  assert.deepEqual(html.results.get("acme/web#1"), { state: "unverified", reason: "unexpected reply", category: "validation", retryable: false });
+
+  // A refused request's body is released, not left holding the connection.
+  let cancelled = 0;
+  const unread = async () => new Response(new ReadableStream({ cancel: () => { cancelled++; } }), { status: 404 });
+  await checkPullRequests([prs[0]], { token: TOKEN, fetchImpl: unread });
+  assert.equal(cancelled, 1);
+
+  // A card whose pull request was over the limit was not asked about; it does not read as a GitHub failure.
+  const over = summarizeVerification(
+    { perCard: [{ name: "1.1.1. Over the limit", keys: ["acme/web#9"] }], otherHost: 0 },
+    { results: new Map(), notChecked: 1 },
+  );
+  assert.deepEqual(over.cards.noneMerged.items, [{ name: "1.1.1. Over the limit", state: "notChecked" }]);
+  const empty = buildOutcomeAudit([], new Map());
+  assert.match(renderOutcomeAudit("B", empty, { verification: over }), /1\.1\.1\\?\. Over the limit \(not asked, over the limit\)/);
+
+  // Nothing to ask: no "0 of 0", and the footer does not claim GitHub was read.
+  const nothing = summarizeVerification({ perCard: [], otherHost: 1 }, { results: new Map(), notChecked: 0 });
+  const quiet = renderOutcomeAudit("B", empty, { verification: nothing });
+  assert.match(quiet, /## Pull requests on GitHub\nNo Done card links a GitHub pull request, so GitHub was not asked\./);
+  assert.equal(/0 of 0 linked pull/.test(quiet), false);
+  assert.match(quiet, /1 Done card links to a host other than GitHub/);
+  assert.match(quiet, /Only Trello is read/);
+}
+
+// ---------------------------------------------------------------------------
+// getOutcomeAudit with verifyPullRequests: the linked pull requests of Done cards, asked of GitHub.
+// Trello and GitHub are both mocked. All data below is invented.
+{
+  const TOKEN = "fake-token-456";
+  const AC = "- **Given** a user\n  **When** they act\n  **Then** it works";
+  const pr = (n) => [{ url: `https://github.com/acme/web/pull/${n}` }];
+  const boardCards = [
+    { id: "e1", name: "EPIC 1. Shop", idList: "L1" },
+    { id: "s11", name: "1.1. Checkout", idList: "L1", desc: AC },
+    { id: "t1", name: "1.1.1. Merged PR", idList: "L3", attachments: pr(1) },
+    { id: "t2", name: "1.1.2. Open PR", idList: "L3", attachments: pr(2) },
+    { id: "t3", name: "1.1.3. Other host", idList: "L3", attachments: [{ url: "https://gitlab.com/acme/group/web/-/merge_requests/7" }] },
+    { id: "t4", name: "1.1.4. No link", idList: "L3", attachments: [] },
+    { id: "t5", name: "1.1.5. Missing PR", idList: "L3", attachments: pr(3) },
+    { id: "t6", name: "1.1.6. Still going", idList: "L2", attachments: pr(4) },
+    { id: "e2", name: "EPIC 2. Other", idList: "L1" },
+    { id: "s21", name: "2.1. Misc", idList: "L1", desc: AC },
+    { id: "t7", name: "2.1.1. Elsewhere", idList: "L3", attachments: pr(9) },
+  ];
+  const github = { "/repos/acme/web/pulls/9": [200, { merged: true, state: "closed" }], "/repos/acme/web/pulls/1": [200, { merged: true, state: "closed" }], "/repos/acme/web/pulls/2": [200, { merged: false, state: "open" }], "/repos/acme/web/pulls/3": [404, { message: "Not Found" }] };
+  const sent = [];
+  const realEnv = process.env.GITHUB_TOKEN;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    sent.push({ host: u.host, method: opts.method ?? "GET", path: u.pathname, auth: opts.headers?.Authorization });
+    if (u.host === "api.github.com") {
+      const [status, body] = github[u.pathname] ?? [500, {}];
+      return new Response(JSON.stringify(body), { status });
+    }
+    const bodies = {
+      "/1/boards/BX": () => ({ name: "Acme shop" }),
+      "/1/boards/BX/lists": () => [{ id: "L1", name: "Backlog" }, { id: "L2", name: "Doing" }, { id: "L3", name: "Done" }],
+      "/1/boards/BX/cards": () => boardCards,
+      "/1/boards/BX/checklists": () => [],
+      "/1/boards/BX/actions": () => [],
+    };
+    return u.pathname in bodies ? new Response(JSON.stringify(bodies[u.pathname]()), { status: 200 }) : new Response("not mocked", { status: 404 });
+  };
+  const call = async (args = {}) => {
+    sent.length = 0;
+    const r = await handle({ id: 9, method: "tools/call", params: { name: "getOutcomeAudit", arguments: { boardId: "BX", epic: "1", ...args } } });
+    return { ...r, text: r.content[0].text, data: r.isError ? null : JSON.parse(r.content[0].text) };
+  };
+  const githubCalls = () => sent.filter((r) => r.host === "api.github.com");
+
+  try {
+    // Off by default: GitHub is never called and the result has no verification part.
+    process.env.GITHUB_TOKEN = TOKEN;
+    const off = await call({ format: "json" });
+    assert.equal("verification" in off.data, false);
+    assert.equal(githubCalls().length, 0);
+
+    // Asked for without a token: nothing is called, and the result says plainly that nothing was checked.
+    delete process.env.GITHUB_TOKEN;
+    const noToken = await call({ format: "json", verifyPullRequests: true });
+    assert.notEqual(noToken.isError, true, noToken.text);
+    assert.deepEqual(noToken.data.verification, { enabled: false, reason: "GITHUB_TOKEN is not set" });
+    assert.equal(githubCalls().length, 0);
+    assert.match((await call({ verifyPullRequests: true })).data.report, /## Pull requests on GitHub\nNot checked: GITHUB_TOKEN is not set/);
+    // A client that did not expand "${GITHUB_TOKEN}" passes the literal text; that is no token.
+    process.env.GITHUB_TOKEN = "${GITHUB_TOKEN}";
+    assert.deepEqual((await call({ format: "json", verifyPullRequests: true })).data.verification, { enabled: false, reason: "GITHUB_TOKEN is not set" });
+    assert.equal(githubCalls().length, 0);
+    delete process.env.GITHUB_TOKEN;
+
+    // With a token: only the pull requests of Done cards are asked about (not 1.1.6, which is in Doing).
+    process.env.GITHUB_TOKEN = TOKEN;
+    const on = await call({ format: "json", verifyPullRequests: true });
+    assert.notEqual(on.isError, true, on.text);
+    assert.deepEqual(on.data.verification, {
+      enabled: true,
+      pullRequests: { merged: 1, open: 1, closed: 0, unverified: 1, notChecked: 0 },
+      cards: {
+        withGitHubPr: 3,
+        noneMerged: { count: 2, items: [{ name: "1.1.2. Open PR", state: "open" }, { name: "1.1.5. Missing PR", state: "unverified" }] },
+      },
+      otherHost: 1,
+    });
+    assert.deepEqual(githubCalls().map((r) => r.path).sort(), ["/repos/acme/web/pulls/1", "/repos/acme/web/pulls/2", "/repos/acme/web/pulls/3"]);
+    assert.equal(githubCalls().every((r) => r.method === "GET" && r.auth === `Bearer ${TOKEN}`), true);
+    assert.equal(sent.every((r) => r.method === "GET"), true, "still read-only");
+    assert.equal(on.text.includes(TOKEN), false, "the token is never in the output");
+    // The numbers everyone already reads are untouched by the check.
+    assert.deepEqual(on.data.progress, off.data.progress);
+    assert.deepEqual(on.data.provenDone, off.data.provenDone);
+
+    // Scoped like the rest of the audit: epic 1 leaves 2.1.1 out (its pull request 9 is not asked about); no scope includes it.
+    assert.equal(githubCalls().some((r) => r.path.endsWith("/pulls/9")), false);
+    const all = await call({ format: "json", verifyPullRequests: true, epic: undefined });
+    assert.equal(all.data.verification.pullRequests.merged, 2);
+    assert.equal(githubCalls().some((r) => r.path.endsWith("/pulls/9")), true);
+
+    const md = (await call({ verifyPullRequests: true })).data.report;
+    assert.match(md, /## Pull requests on GitHub\n1 of 3 linked pull requests are merged/);
+    assert.match(md, /None merged on 2 cards: .*1\.1\.2.*\(open\).*1\.1\.5.*\(could not verify\)/);
+    assert.match(md, /1 Done card links to a host other than GitHub/);
+    assert.match(md, /It does not say the work matches the card/);
+    assert.equal(/not checked for a merge/.test(md), false, "the old footer would now be wrong");
+    assert.match((await call()).data.report, /not checked for a merge/);
+
+    // The same Done set as the audit: an epic in a Done list whose story is still open is not asked
+    // about; a story whose only task is Done is finished, wherever its own card sits, so it is.
+    boardCards.push(
+      { id: "e3", name: "EPIC 3. Epic in Done", idList: "L3", attachments: pr(10) },
+      { id: "s31", name: "3.1. Finished by its task", idList: "L1", desc: AC, attachments: pr(11) },
+      { id: "t311", name: "3.1.1. Only task", idList: "L3", attachments: [] },
+      { id: "s32", name: "3.2. Not started", idList: "L1", desc: AC },
+      { id: "t321", name: "3.2.1. Open task", idList: "L2", attachments: [] },
+    );
+    await call({ format: "json", verifyPullRequests: true, epic: "3" });
+    assert.deepEqual(githubCalls().map((r) => r.path), ["/repos/acme/web/pulls/11"]);
+    boardCards.splice(-5);
+  } finally {
+    if (realEnv === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = realEnv;
+  }
+}
 
 globalThis.fetch = realFetch;
 
