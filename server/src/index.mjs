@@ -75,7 +75,7 @@ export function validateArgs(name, schema = {}, args = {}) {
   for (const [key, value] of Object.entries(args)) {
     const want = schema.properties?.[key]?.type;
     if (!want || value === undefined) continue;
-    const got = Array.isArray(value) ? "array" : typeof value;
+    const got = Array.isArray(value) ? "array" : want === "integer" && Number.isInteger(value) ? "integer" : typeof value;
     if (got !== want) {
       throw new Error(`Argument ${key} for ${name} must be ${want}, got ${got}`);
     }

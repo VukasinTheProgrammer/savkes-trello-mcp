@@ -161,6 +161,10 @@ const hasEvidence = (f) => Boolean(f && (f.pullRequest || f.deployedComment || f
 
 // --- The audit ----------------------------------------------------------------
 
+// A card counts as Done here when it is a finished work item, or a story whose work items are
+// all finished. The GitHub check in reports.mjs asks about the same cards.
+export const countsAsDone = (node) => (node.children.length === 0 ? node.isDone : depthOf(node) === 2 && node.done === node.total);
+
 // `roots` as scopeTo returns them; `facts` as indexFacts returns them. `exemptLabels` names
 // the kinds of work that never have a pull request (design, docs, meetings): a Done card
 // carrying one is not listed for the missing pull request. Its other evidence still counts.
@@ -211,7 +215,7 @@ export function buildOutcomeAudit(roots, facts, { exemptLabels = [], now = Date.
 
     // A card counts as Done here when it is a finished work item, or a story whose work
     // items are all finished: criteria are written on stories, so that is where they get ticked.
-    const finished = isLeaf ? node.isDone : depthOf(node) === 2 && node.done === node.total;
+    const finished = countsAsDone(node);
     if (isLeaf && node.isDone && !f?.pullRequest && !isExempt(f)) noPullRequest.push({ number: node.number, name: node.name });
     // Done by its ticked due date (or Done list) and Blocked at the same time: one of the two
     // is out of date. Said out loud, not resolved, because the status report counts it as Done.
@@ -278,12 +282,14 @@ function renderVerification(v) {
   if (!v.enabled) return [`Not checked: ${v.reason}.`];
   const { merged, open, closed, unverified, notChecked } = v.pullRequests;
   const total = merged + open + closed + unverified + notChecked;
-  const lines = [
-    `${merged} of ${total} linked pull ${total === 1 ? "request is" : "requests are"} merged, according to GitHub. ` +
-      `${open} open, ${closed} closed without a merge, ${unverified} could not be verified${notChecked ? `, ${notChecked} not asked about (over the limit)` : ""}.`,
-  ];
+  const lines = total
+    ? [
+        `${merged} of ${total} linked pull ${total === 1 ? "request is" : "requests are"} merged, according to GitHub. ` +
+          `${open} open, ${closed} closed without a merge, ${unverified} could not be verified${notChecked ? `, ${notChecked} not asked about (over the limit)` : ""}.`,
+      ]
+    : ["No Done card links a GitHub pull request, so GitHub was not asked."];
   const { withGitHubPr, noneMerged } = v.cards;
-  const shown = { open: "open", closed: "closed, not merged", unverified: "could not verify" };
+  const shown = { open: "open", closed: "closed, not merged", unverified: "could not verify", notChecked: "not asked, over the limit" };
   if (noneMerged.count) {
     lines.push(
       `- None merged on ${noneMerged.count} ${noneMerged.count === 1 ? "card" : "cards"}: ` +
@@ -295,9 +301,12 @@ function renderVerification(v) {
   if (v.otherHost) {
     lines.push(`- ${v.otherHost} Done ${v.otherHost === 1 ? "card links" : "cards link"} to a host other than GitHub, so ${v.otherHost === 1 ? "it was" : "they were"} not checked.`);
   }
-  lines.push("_GitHub says whether a pull request was merged. It does not say the work matches the card, was reviewed, or passed checks._");
+  if (total) lines.push("_GitHub says whether a pull request was merged. It does not say the work matches the card, was reviewed, or passed checks._");
   return lines;
 }
+
+// True when GitHub was actually asked about at least one pull request.
+const askedGitHub = (v) => Boolean(v?.enabled && v.pullRequests.merged + v.pullRequests.open + v.pullRequests.closed + v.pullRequests.unverified);
 
 export function renderOutcomeAudit(boardName, audit, { now = Date.now(), verification } = {}) {
   const { progress, provenDone, items, unprovenSignOff, waiting, ruleBreaks, inconsistent, missingParent, exemptLabels, rule, evidence } = audit;
@@ -378,7 +387,7 @@ export function renderOutcomeAudit(boardName, audit, { now = Date.now(), verific
     "",
     "## What counts as evidence",
     ...evidence.map((e) => `- ${e.text}`),
-    verification?.enabled
+    askedGitHub(verification)
       ? "_Trello and GitHub were read: a pull request on a Done card was asked about, the other evidence comes from the card._"
       : "_Only Trello is read: an attached pull request is seen, not checked for a merge._",
   );

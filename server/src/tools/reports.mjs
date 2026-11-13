@@ -6,7 +6,7 @@ import { resolveBoard, trello } from "../trello/client.mjs";
 import { buildDonePathAudit, renderDonePathAudit } from "../utils/donepath.mjs";
 import { checkPullRequests, pullRequestsOnCards, summarizeVerification } from "../utils/github.mjs";
 import { cardNumber } from "../utils/numbering.mjs";
-import { buildOutcomeAudit, indexFacts, renderOutcomeAudit } from "../utils/outcome.mjs";
+import { buildOutcomeAudit, countsAsDone, indexFacts, renderOutcomeAudit } from "../utils/outcome.mjs";
 import {
   buildReport,
   buildTree,
@@ -324,10 +324,9 @@ export const TOOLS = {
           verification = { enabled: false, reason: "GITHUB_TOKEN is not set" };
         } else {
           // The same cards the audit counts as Done, inside the same epic scope.
-          const isDone = doneListTest(doneLists);
-          const inScope = new Set();
-          walk(roots, (node) => inScope.add(node.number));
-          const doneCards = cards.filter((c) => (isDone(listNames[c.idList]) || c.dueComplete === true) && inScope.has(cardNumber(c.name)));
+          const done = new Set();
+          walk(roots, (node) => countsAsDone(node) && done.add(node.number));
+          const doneCards = cards.filter((c) => done.has(cardNumber(c.name)));
           const found = pullRequestsOnCards(doneCards);
           verification = summarizeVerification(found, await checkPullRequests(found.prs, { token }));
         }
@@ -385,7 +384,7 @@ export const TOOLS = {
           description: 'Exact names of the lists where work is reviewed or tested. Default: ["Testing/Review", "Testing", "Review", "QA"]',
         },
         burstSize: {
-          type: "number",
+          type: "integer",
           description: "How many cards moved into Done together make a batch (default: 5)",
         },
       },

@@ -29,6 +29,8 @@ export function parseGitHubPr(url) {
   if (!match) return null;
   const [, owner, repo, number] = match;
   if (![owner, repo].every((n) => NAME.test(n) && !/^\.+$/.test(n))) return null;
+  // Too many digits to hold exactly would ask GitHub about a different pull request.
+  if (!Number.isSafeInteger(Number(number))) return null;
   return { owner, repo, number: Number(number) };
 }
 
@@ -51,12 +53,22 @@ async function checkOne({ owner, repo, number }, { token, fetchImpl, timeoutMs }
       },
       signal: controller.signal,
     });
+    // Anything but a 200 is answered from the status alone; its body is released, not left
+    // holding the connection.
+    if (res.status !== 200) await res.body?.cancel();
     if (res.status === 404) return unverified("not found or no access", "permission", false);
     if (res.status === 401 || res.status === 403) return unverified("refused by GitHub", "permission", false);
     if (res.status === 429) return unverified("rate limited", "transient", true);
     if (res.status >= 500) return unverified("GitHub error", "transient", true);
     if (res.status !== 200) return unverified("unexpected reply", "validation", false);
-    const body = await res.json();
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      // Cut off by the timeout is a network problem; a body that is not JSON is not.
+      if (controller.signal.aborted) throw new Error("timed out");
+      return unverified("unexpected reply", "validation", false);
+    }
     if (typeof body?.merged !== "boolean") return unverified("unexpected reply", "validation", false);
     if (body.merged) return { state: "merged" };
     return { state: body.state === "open" ? "open" : "closed" };
@@ -89,16 +101,17 @@ export function pullRequestsOnCards(cards) {
 }
 
 // What GitHub said, per pull request and per card. A card is listed when none of its pull
-// requests is merged; its state is the most hopeful one it has (open, then closed), and
-// "unverified" when GitHub could not be asked.
+// requests is merged; its state is the most hopeful one it has (open, then closed),
+// "unverified" when GitHub could not answer, and "notChecked" when it was over the limit.
 export function summarizeVerification({ perCard, otherHost }, { results, notChecked }) {
   const count = { merged: 0, open: 0, closed: 0, unverified: 0 };
   for (const r of results.values()) count[r.state]++;
   const noneMerged = [];
   for (const card of perCard) {
-    const states = card.keys.map((k) => results.get(k)?.state ?? "unverified");
+    const states = card.keys.map((k) => results.get(k)?.state ?? "notChecked");
     if (states.includes("merged")) continue;
-    noneMerged.push({ name: card.name, state: states.includes("open") ? "open" : states.includes("closed") ? "closed" : "unverified" });
+    const state = ["open", "closed", "unverified"].find((s) => states.includes(s)) ?? "notChecked";
+    noneMerged.push({ name: card.name, state });
   }
   return {
     enabled: true,

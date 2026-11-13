@@ -55,7 +55,9 @@ export function buildDonePathAudit({
     }
     const intoDone = history.filter((e) => e.from !== null && !isDone(e.from) && isDone(e.to));
     for (const e of intoDone) doneMoves.push({ ...e, card });
-    if (history[0].from === null && isDone(history[0].to)) {
+    // Created in Done and never moved back in: written down afterwards. A card that left Done
+    // and came back is judged on its path like any other.
+    if (history[0].from === null && isDone(history[0].to) && !intoDone.length) {
       createdInDone++;
       continue;
     }

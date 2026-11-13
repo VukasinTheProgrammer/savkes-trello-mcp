@@ -33,7 +33,7 @@ import {
   renderOutcomeAudit,
 } from "./utils/outcome.mjs";
 import { buildDonePathAudit, renderDonePathAudit } from "./utils/donepath.mjs";
-import { checkPullRequests, parseGitHubPr } from "./utils/github.mjs";
+import { checkPullRequests, parseGitHubPr, summarizeVerification } from "./utils/github.mjs";
 import {
   buildReport,
   buildTree,
@@ -2008,6 +2008,13 @@ assert.equal(sawSignal.aborted, false);
   const anon = buildDonePathAudit({ cards, events: events.map((e) => ({ ...e, by: null })) });
   assert.equal(anon.bursts.count, 0);
   assert.deepEqual(anon.movedByAssignee, { count: 0, of: 0 });
+  // Created in Done by mistake, moved out, then dragged straight back: its path is judged, not excused.
+  const back = buildDonePathAudit({
+    cards: [card("h", "1.4.1. Back again", "Done")],
+    events: [ev("h", 0, null, "Done"), ev("h", 1, "Done", "Backlog"), ev("h", 2, "Backlog", "Done")],
+  });
+  assert.equal(back.createdInDone, 0);
+  assert.equal(back.skipped.both.count, 1);
 
   const md = renderDonePathAudit("Acme", audit, { now: Date.parse("2026-11-07T00:00:00Z") });
   assert.match(md, /^# Done-path audit: Acme\n_2026-11-07_/);
@@ -2091,6 +2098,11 @@ assert.equal(sawSignal.aborted, false);
   const bad = await call({ burstSize: 1 });
   assert.equal(bad.isError, true);
   assert.match(bad.text, /burstSize must be a whole number of 2 or more/);
+  // The schema states the whole-number rule itself, and a whole number still passes it.
+  const fraction = await call({ burstSize: 5.5 });
+  assert.equal(fraction.isError, true);
+  assert.match(fraction.text, /Argument burstSize for getDonePathAudit must be integer, got number/);
+  assert.notEqual((await call({ format: "json", burstSize: 5 })).isError, true);
   const unknownArg = await call({ staleDays: 7 });
   assert.equal(unknownArg.isError, true);
   assert.match(unknownArg.text, /Unknown argument for getDonePathAudit: staleDays/);
@@ -2116,6 +2128,7 @@ assert.equal(sawSignal.aborted, false);
     "https://user@github.com/acme/web/pull/42",
     "https://github.com/../web/pull/42",
     "https://github.com/acme/../pull/42",
+    "https://github.com/acme/web/pull/99999999999999999999",
     "https://gitlab.com/acme/group/web/-/merge_requests/7",
     "not a url",
     undefined,
@@ -2177,6 +2190,33 @@ assert.equal(sawSignal.aborted, false);
   assert.equal(slow.results.get("acme/web#1").reason, "could not reach GitHub");
 
   await assert.rejects(() => checkPullRequests(prs, { token: "", fetchImpl: fakeFetch }), /token is required/);
+
+  // A 200 that is not JSON (a proxy's HTML page) is an unexpected reply, not a network failure to retry.
+  const html = await checkPullRequests([prs[0]], { token: TOKEN, fetchImpl: async () => new Response("<html>login</html>", { status: 200 }) });
+  assert.deepEqual(html.results.get("acme/web#1"), { state: "unverified", reason: "unexpected reply", category: "validation", retryable: false });
+
+  // A refused request's body is released, not left holding the connection.
+  let cancelled = 0;
+  const unread = async () => new Response(new ReadableStream({ cancel: () => { cancelled++; } }), { status: 404 });
+  await checkPullRequests([prs[0]], { token: TOKEN, fetchImpl: unread });
+  assert.equal(cancelled, 1);
+
+  // A card whose pull request was over the limit was not asked about; it does not read as a GitHub failure.
+  const over = summarizeVerification(
+    { perCard: [{ name: "1.1.1. Over the limit", keys: ["acme/web#9"] }], otherHost: 0 },
+    { results: new Map(), notChecked: 1 },
+  );
+  assert.deepEqual(over.cards.noneMerged.items, [{ name: "1.1.1. Over the limit", state: "notChecked" }]);
+  const empty = buildOutcomeAudit([], new Map());
+  assert.match(renderOutcomeAudit("B", empty, { verification: over }), /1\.1\.1\\?\. Over the limit \(not asked, over the limit\)/);
+
+  // Nothing to ask: no "0 of 0", and the footer does not claim GitHub was read.
+  const nothing = summarizeVerification({ perCard: [], otherHost: 1 }, { results: new Map(), notChecked: 0 });
+  const quiet = renderOutcomeAudit("B", empty, { verification: nothing });
+  assert.match(quiet, /## Pull requests on GitHub\nNo Done card links a GitHub pull request, so GitHub was not asked\./);
+  assert.equal(/0 of 0 linked pull/.test(quiet), false);
+  assert.match(quiet, /1 Done card links to a host other than GitHub/);
+  assert.match(quiet, /Only Trello is read/);
 }
 
 // ---------------------------------------------------------------------------
@@ -2279,6 +2319,19 @@ assert.equal(sawSignal.aborted, false);
     assert.match(md, /It does not say the work matches the card/);
     assert.equal(/not checked for a merge/.test(md), false, "the old footer would now be wrong");
     assert.match((await call()).data.report, /not checked for a merge/);
+
+    // The same Done set as the audit: an epic in a Done list whose story is still open is not asked
+    // about; a story whose only task is Done is finished, wherever its own card sits, so it is.
+    boardCards.push(
+      { id: "e3", name: "EPIC 3. Epic in Done", idList: "L3", attachments: pr(10) },
+      { id: "s31", name: "3.1. Finished by its task", idList: "L1", desc: AC, attachments: pr(11) },
+      { id: "t311", name: "3.1.1. Only task", idList: "L3", attachments: [] },
+      { id: "s32", name: "3.2. Not started", idList: "L1", desc: AC },
+      { id: "t321", name: "3.2.1. Open task", idList: "L2", attachments: [] },
+    );
+    await call({ format: "json", verifyPullRequests: true, epic: "3" });
+    assert.deepEqual(githubCalls().map((r) => r.path), ["/repos/acme/web/pulls/11"]);
+    boardCards.splice(-5);
   } finally {
     if (realEnv === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = realEnv;
