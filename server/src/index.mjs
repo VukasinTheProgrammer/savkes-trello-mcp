@@ -24,6 +24,7 @@
 import { PROMPTS } from "./prompts.mjs";
 import { listResources, readResource } from "./resources.mjs";
 import { TOOLS as CARD_TOOLS } from "./tools/cards.mjs";
+import { reportToolActivity, acquireFieldClaims, releaseFieldClaims, collaborationEnabled } from "./collaboration-bridge.mjs";
 import { TOOLS as HIERARCHY_TOOLS } from "./tools/hierarchy.mjs";
 
 // The selftest asserts the full name list, so a collision between the two halves shows
@@ -168,18 +169,85 @@ export async function handle(msg) {
     return { description: prompt.description, ...prompt.build(args) };
   }
 
+
   if (method === "tools/call") {
     const tool = TOOLS[params.name];
+    const args = params.arguments ?? {};
+    let claim = null;
+    let ok = false;
+
     try {
-      if (!tool) throw new Error(`Unknown tool: ${params.name}`);
-      const args = params.arguments ?? {};
+      if (!tool) {
+        throw new Error(`Unknown tool: ${params.name}`);
+      }
+
       validateArgs(params.name, tool.inputSchema, args);
+
+      // Acquire exactly the fields changed by this call. Creation and deletion
+      // use a fixed resource-level lock, while partial updates use argument keys.
+      if (collaborationEnabled() && tool.annotations?.readOnlyHint === false) {
+        if (!tool.claimResource || !tool.fieldLocks) {
+          throw new Error("Collaboration protection unavailable for this tool; Trello was not modified");
+        }
+        const resourceArg = tool.claimResource;
+        const rawId = resourceArg === "boardId" && args.boardId === undefined
+          ? process.env.TRELLO_BOARD_ID
+          : args[resourceArg];
+        if (typeof rawId !== "string" || !rawId.trim()) {
+          throw new Error("Collaboration resource ID unavailable; Trello was not modified");
+        }
+        const fields = [...new Set(Object.entries(tool.fieldLocks)
+          .filter(([arg]) => arg === "_" || args[arg] !== undefined)
+          .map(([, field]) => field))];
+        if (fields.length === 0) {
+          throw new Error("No modified fields supplied; Trello was not modified");
+        }
+        // Namespace non-card resources to avoid collisions with card identifiers.
+        const resourceId = `${resourceArg}:${rawId}`;
+        const acquired = await acquireFieldClaims(resourceId, fields);
+        if (!acquired || acquired.ok !== true || acquired.skipped === true) {
+          throw new Error("Collaboration claim unavailable or conflicting; Trello was not modified");
+        }
+        claim = { cardId: resourceId, fields };
+      }
+
       const result = await tool.run(args);
-      // Compact, not pretty-printed: indentation is ~18% of a large result, and
-      // clients cap tool output (Claude Code rejects results over its token limit).
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      ok = true;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result),
+          },
+        ],
+      };
     } catch (err) {
-      return { content: [{ type: "text", text: String(err.message ?? err) }], isError: true };
+      return {
+        content: [
+          {
+            type: "text",
+            text: String(err.message ?? err),
+          },
+        ],
+        isError: true,
+      };
+    } finally {
+      if (claim) {
+        try {
+          await releaseFieldClaims(
+            claim.cardId,
+            claim.fields,
+          );
+        } catch (err) {
+          console.error(
+            `[${SERVER.name}] claim release failed:`,
+            err?.message ?? err,
+          );
+        }
+      }
+
+      reportToolActivity(params.name, args, ok);
     }
   }
 

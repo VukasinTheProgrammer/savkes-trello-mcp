@@ -108,6 +108,8 @@ export const TOOLS = {
   },
 
   addCard: {
+    claimResource: "listId",
+    fieldLocks: { name: "cards" },
     description: "Add a new card to a list",
     annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
@@ -142,6 +144,8 @@ export const TOOLS = {
   },
 
   updateCard: {
+    claimResource: "cardId",
+    fieldLocks: { name: "name", description: "description", labels: "labels", position: "position", dueDate: "dueDate", startDate: "startDate" },
     description: "Update an existing card",
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
@@ -176,6 +180,8 @@ export const TOOLS = {
   },
 
   moveCard: {
+    claimResource: "cardId",
+    fieldLocks: { listId: "idList", boardId: "idBoard" },
     description: "Move a card to a different list",
     annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
@@ -198,6 +204,8 @@ export const TOOLS = {
   },
 
   changeCardMembers: {
+    claimResource: "cardId",
+    fieldLocks: { members: "idMembers" },
     description: "Change the members of a card",
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
@@ -217,6 +225,8 @@ export const TOOLS = {
   },
 
   archiveCard: {
+    claimResource: "cardId",
+    fieldLocks: { _: "closed" },
     description: "Archive a card",
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
@@ -228,6 +238,8 @@ export const TOOLS = {
   },
 
   unarchiveCard: {
+    claimResource: "cardId",
+    fieldLocks: { _: "closed" },
     description:
       "Return an archived card to its list. The card keeps its list, position, " +
       "labels and attachments — archiving hides a card, it does not dismantle it.",
@@ -241,6 +253,8 @@ export const TOOLS = {
   },
 
   addList: {
+    claimResource: "boardId",
+    fieldLocks: { _: "lists" },
     description: "Add a new list to a board; defaults to TRELLO_BOARD_ID",
     annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
@@ -256,6 +270,8 @@ export const TOOLS = {
   },
 
   archiveList: {
+    claimResource: "listId",
+    fieldLocks: { _: "closed" },
     description: "Archive a list",
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
@@ -267,6 +283,8 @@ export const TOOLS = {
   },
 
   addComment: {
+    claimResource: "cardId",
+    fieldLocks: { _: "comments" },
     description: "Add a comment to a card",
     annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
@@ -282,6 +300,8 @@ export const TOOLS = {
   },
 
   updateComment: {
+    claimResource: "cardId",
+    fieldLocks: { _: "comments" },
     description: "Update the text of an existing comment",
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
@@ -298,6 +318,8 @@ export const TOOLS = {
   },
 
   deleteComment: {
+    claimResource: "cardId",
+    fieldLocks: { _: "comments" },
     description: "Delete a comment from a card",
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
@@ -407,6 +429,8 @@ export const TOOLS = {
   },
 
   addChecklist: {
+    claimResource: "cardId",
+    fieldLocks: { _: "checklists" },
     description:
       "Add a checklist to a card and return it, including its id. Trello renders a " +
       "checklist as real checkboxes with a progress count on the card face, which is " +
@@ -426,6 +450,8 @@ export const TOOLS = {
   },
 
   updateChecklistItem: {
+    claimResource: "cardId",
+    fieldLocks: { state: "checkItems", name: "checkItems" },
     description:
       "Tick, untick or rename one checklist item. Takes the CARD id plus the check " +
       "item id — Trello's update endpoint is card-scoped, so a checklistId is the one " +
@@ -464,6 +490,8 @@ export const TOOLS = {
   },
 
   deleteChecklist: {
+    claimResource: "checklistId",
+    fieldLocks: { _: "checklist" },
     description:
       "Delete a checklist and every item on it. Permanent — Trello has no undo for " +
       "this, and the items go with it. To remove one item instead, there is no " +
@@ -483,6 +511,8 @@ export const TOOLS = {
   },
 
   addChecklistItem: {
+    claimResource: "checklistId",
+    fieldLocks: { _: "checkItems" },
     description:
       "Add one item to an existing checklist. checklistId comes from addChecklist's " +
       "result or from getCardChecklists — it is not the card id.",
