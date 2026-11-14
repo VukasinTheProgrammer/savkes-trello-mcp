@@ -4,12 +4,17 @@
   "description": "Zero-dependency stdio MCP server for Trello, written against the raw protocol",
   "private": true,
   "type": "module",
-  "bin": { "trello-board-mcp": "src/index.mjs" },
-  "engines": { "node": ">=20.11" },
+  "bin": {
+    "trello-board-mcp": "src/index.mjs"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
     "start": "node src/index.mjs",
     "test": "node --test src/index.test.mjs",
-    "smoke": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}' '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resources/list\"}' '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"prompts/list\"}' | node src/index.mjs"
+    "smoke": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}' '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resources/list\"}' '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"prompts/list\"}' | node src/index.mjs",
+    "dashboard": "node src/dashboard-server.mjs"
   },
   "license": "MIT"
 }

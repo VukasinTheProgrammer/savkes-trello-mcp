@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { analyzeBoard, summarizeBoard } from './board-health.mjs';
+import { TOOLS } from './tools/board-health.mjs';
+const lists = [{id:'todo',name:'To Do'},{id:'done',name:'Done'}];
+const now = new Date('2026-11-14T12:00:00Z');
+const analyze = (cards, extras={}) => analyzeBoard({boardId:'b',lists,cards,now,...extras});
+test('empty board has no false health score or invalid numbers',()=>{const a=analyze([]);assert.equal(a.metrics.totalCards,0);assert.equal(a.metrics.healthScore,null);assert.equal(a.metrics.completionPercentage,0);});
+test('completed, overdue, upcoming, blocked, unassigned and workload',()=>{const a=analyze([{id:'1',name:'Done',idList:'done',idMembers:['a']},{id:'2',name:'Blocked: review',idList:'todo',due:'2026-11-12',idMembers:['a']},{id:'3',name:'Next',idList:'todo',due:'2026-11-17',idMembers:[]}]);assert.equal(a.metrics.completedCards,1);assert.equal(a.metrics.overdueCards,1);assert.equal(a.metrics.upcomingDeadlines,1);assert.equal(a.metrics.blockedCards,1);assert.equal(a.metrics.unassignedCards,1);assert.deepEqual(a.workloadDistribution,[{memberId:'a',cardCount:1}]);assert.match(summarizeBoard(a).summary,/1\/3/);});
+test('no due date is not automatically blocked',()=>{assert.equal(analyze([{id:'1',name:'Normal',idList:'todo'}]).metrics.blockedCards,0);});
+test('custom done list and archived exclusion',()=>{const a=analyze([{id:'1',idList:'qa'},{id:'2',idList:'todo',closed:true}],{lists:[...lists,{id:'qa',name:'Shipped'}],completedListNames:'Shipped'});assert.equal(a.metrics.completedCards,1);assert.equal(a.metrics.totalCards,1);});
+test('history optional, weekly throughput distinct card moves',()=>{const action={type:'updateCard',date:'2026-11-13T12:00:00Z',data:{card:{id:'c1'},listBefore:{id:'todo'},listAfter:{id:'done'}}};assert.equal(analyze([]).metrics.weeklyThroughput,null);assert.equal(analyze([],{historyAvailable:true,actions:[action,action]}).metrics.weeklyThroughput,1);});
+test('MCP tools expose read-only schemas',()=>{for(const key of ['analyzeBoardHealth','getBoardSummary']){assert.equal(TOOLS[key].annotations.readOnlyHint,true);assert.equal(typeof TOOLS[key].run,'function');}});

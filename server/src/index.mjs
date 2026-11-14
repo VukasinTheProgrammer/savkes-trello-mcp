@@ -24,13 +24,14 @@
 import { PROMPTS } from "./prompts.mjs";
 import { listResources, readResource } from "./resources.mjs";
 import { TOOLS as CARD_TOOLS } from "./tools/cards.mjs";
+import { TOOLS as BOARD_HEALTH_TOOLS } from "./tools/board-health.mjs";
 import { TOOLS as HIERARCHY_TOOLS } from "./tools/hierarchy.mjs";
 
 // The selftest asserts the full name list, so a collision between the two halves shows
 // up as a short count — which is also why no total is written here: a number in a
 // comment goes stale the first time a tool is added, and the selftest already holds
 // the real one.
-export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS };
+export const TOOLS = { ...CARD_TOOLS, ...HIERARCHY_TOOLS, ...BOARD_HEALTH_TOOLS };
 
 // One source for both the handshake and the stderr log prefix, so they can't drift.
 const SERVER = { name: "trello-board", version: "0.4.0" };
