@@ -1,16 +1,18 @@
 {
-	"mcpServers": {
-		"trello-board": {
-			"type": "stdio",
-			"command": "node",
-			"args": [
-				"${CLAUDE_PROJECT_DIR:-.}/server/src/index.mjs"
-			],
-			"env": {
-				"TRELLO_API_KEY": "${TRELLO_API_KEY}",
-				"TRELLO_TOKEN": "${TRELLO_TOKEN}",
-				"TRELLO_BOARD_ID": "${TRELLO_BOARD_ID}"
-			}
-		}
-	}
+  "mcpServers": {
+    "trello-board": {
+      "command": "node",
+      "args": ["${CLAUDE_PROJECT_DIR}/server/src/index.mjs"],
+      "env": {
+        "TRELLO_API_KEY": "${TRELLO_API_KEY}",
+        "TRELLO_TOKEN": "${TRELLO_TOKEN}",
+        "TRELLO_BOARD_ID": "${TRELLO_BOARD_ID:-}",
+        "COLLAB_ENABLED": "${COLLAB_ENABLED:-}",
+        "COLLAB_HUB_URL": "${COLLAB_HUB_URL:-}",
+        "HUB_BRIDGE_TOKEN": "${HUB_BRIDGE_TOKEN:-}",
+        "COLLAB_DEVELOPER_ID": "${COLLAB_DEVELOPER_ID:-}",
+        "COLLAB_REQUIRE_HUB": "${COLLAB_REQUIRE_HUB:-}"
+      }
+    }
+  }
 }

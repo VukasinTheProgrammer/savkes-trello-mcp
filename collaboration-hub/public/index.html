@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trello MCP · Collaboration Hub</title>
+<style>
+:root{--ink:#1f2354;--muted:#6b6f95;--brand:#6c5ce7;--brand-dark:#5848d6;--soft:#ecebfb;--line:#e1e3f3;--ok-bg:#e3f6ec;--ok:#1d7a52;--bad-bg:#fde8ec;--bad:#b3304a;--warn:#a8650a;
+font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink)}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:linear-gradient(160deg,#e6eaff,#f6f5ff 55%,#fff) fixed}
+main{max-width:1040px;margin:0 auto;padding:36px 22px 60px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--brand)}
+h1{font-size:34px;line-height:1.15;margin:6px 0 8px;letter-spacing:-.02em}
+.sub{color:var(--muted);font-size:14px}
+.tag{background:var(--ok-bg);color:var(--ok);border:1px solid #bfe8d2;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.tag.error{background:var(--bad-bg);color:var(--bad);border-color:#f5c2cc}
+.stack{display:grid;gap:16px;margin-top:26px}
+.panel{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px 22px;box-shadow:0 1px 2px rgba(60,60,120,.05)}
+.step{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--brand);margin:0 0 4px}
+h2{font-size:18px;margin:0 0 14px}
+h3{font-size:15px;margin:0 0 10px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,button{font:inherit;font-size:14px;border-radius:9px;padding:10px 13px}
+input{border:1px solid var(--line);background:#fff;color:var(--ink);min-width:0}
+input:focus,button:focus-visible,summary:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+button{border:0;background:var(--brand);color:#fff;font-weight:600;cursor:pointer}
+button:hover{background:var(--brand-dark)}
+button.secondary{background:var(--soft);color:#473bb0}
+button.secondary:hover{background:#dedbf7}
+button.approve{background:var(--ok-bg);color:var(--ok);padding:5px 10px;font-size:12px}
+button.decline{background:var(--bad-bg);color:var(--bad);padding:5px 10px;font-size:12px}
+button.split{background:var(--soft);color:#473bb0;padding:5px 10px;font-size:12px}
+.notice{font-size:13px;color:var(--muted);margin:12px 0 0}
+.notice.warn{color:var(--warn)}
+.notice.error{color:var(--bad)}
+details{margin-top:12px}
+summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--brand)}
+details .controls{margin-top:12px}
+.hint{font-size:13px;color:var(--muted);margin:0 0 12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding:11px 0;font-size:14px}
+.row:first-child{border-top:0}
+.row .grow{flex:1 1 260px}
+.empty{color:#9a9dbd;font-style:italic;font-size:14px}
+.item{border-top:1px solid var(--line);padding:10px 0;font-size:14px}
+.item:first-child{border-top:0}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.note{font-size:12px;color:var(--muted);margin:12px 0 0}
+@media(max-width:720px){.two{grid-template-columns:1fr}header{display:block}.tag{display:inline-block;margin-top:10px}}
+@media(prefers-reduced-motion:no-preference){button{transition:background .15s}}
+.board{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:14px}
+.board strong{color:var(--ink)}
+.board a{color:var(--brand)}
+select{font:inherit;font-size:14px;border-radius:9px;padding:10px 13px;border:1px solid var(--line);background:#fff;color:var(--ink);max-width:340px}
+.limit{font-size:11px;color:var(--muted);margin-left:-4px}
+.splitform{display:flex;gap:8px;flex-wrap:wrap;width:100%;margin-top:6px}
+.splitform input{flex:1 1 220px}
+</style></head><body><main>
+<header><div><div class="eyebrow">Team mode / prototype</div><h1>Live Collaboration Hub</h1><div class="sub">Presence · Claims · Field overlap · Dependencies · Activity</div></div><span class="tag" id="status">Connecting…</span></header>
+
+<div class="stack">
+<section class="panel">
+<p class="step">01 · Developer workspace</p><h2>Developer controls</h2>
+<div class="controls">
+<input id="name" placeholder="Your name" maxlength="40" aria-label="Developer name (max 40 characters)" title="Max 40 characters"><span class="limit" id="nameCount">0/40</span><button id="join">Connect</button>
+<select id="cardSelect" aria-label="Trello card" hidden></select>
+<input id="card" value="TRELLO-42" maxlength="80" aria-label="Card ID" title="Card ID (demo mode)">
+<button id="claim">Claim card</button><button id="focus" class="secondary">View card</button><button id="release" class="secondary">Release</button>
+</div>
+<div class="board" id="board">Loading Trello board…</div>
+<p class="notice" id="notice">Open another browser tab to simulate multiple developers.</p>
+<details><summary>Advanced controls · field editing &amp; dependencies</summary>
+<div class="controls">
+<input id="field" value="description" maxlength="40" aria-label="Field"><button id="claimfield">Edit field</button><button id="releasefield" class="secondary">Release field</button>
+<select id="needsSelect" aria-label="Prerequisite card" hidden></select>
+<input id="needs" value="TRELLO-41" maxlength="80" aria-label="Prerequisite card"><button id="depends" class="secondary">Add dependency</button><button id="done" class="secondary">Mark done</button>
+</div></details>
+</section>
+
+<section class="panel">
+<p class="step">02 · Team coordination</p><h2>Collaboration requests</h2>
+<p class="hint">Ask to help on a claimed card. The card owner can approve, decline, or split the work.</p>
+<div class="controls"><input id="message" placeholder="How can I help?" maxlength="200" aria-label="Message to the card owner (max 200 characters)" style="flex:1 1 260px"><button id="request">Request to collaborate</button></div>
+<div id="requests" style="margin-top:12px"><div class="empty">No collaboration requests</div></div>
+<h3 style="margin-top:20px">Split work assignments</h3>
+<div id="splits"><div class="empty">No split work yet</div></div>
+<p class="note">Splits stay in this hub until the card owner explicitly confirms creation of a separate Trello card. The original card remains unchanged; Trello membership is not assigned automatically.</p>
+</section>
+
+<div class="two">
+<section class="panel"><h3>Online developers</h3><div id="people" class="empty">Nobody online yet</div></section>
+<section class="panel"><h3>Claimed cards</h3><div id="claims" class="empty">No active claims</div></section>
+<section class="panel"><h3>Field claims</h3><div id="fields" class="empty">No field claims</div></section>
+<section class="panel"><h3>Dependencies &amp; status</h3><div id="dependencies" class="empty">No dependencies</div></section>
+</div>
+
+<section class="panel"><h3>Live activity</h3><div id="events" class="empty">Waiting for events…</div></section>
+</div>
+</main>
+<script>
+let socket, me=null, board=null;
+let state={participants:[],claims:[],fieldClaims:[],dependencies:[],statuses:[],events:[],collaborationRequests:[],workSplits:[],limits:{}};
+const $=id=>document.getElementById(id);
+const el=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n};
+// Show card names instead of raw 24-character IDs whenever the real board is loaded.
+const cardLabel=id=>{const c=board?.cards.find(x=>x.id===id);return c?`${c.name} (${c.list})`:id;};
+const cardValue=()=>board?$('cardSelect').value:$('card').value;
+const needsValue=()=>board?$('needsSelect').value:$('needs').value;
+const notice=(text,kind='')=>{$('notice').textContent=text;$('notice').className='notice'+(kind?' '+kind:'');};
+
+function renderList(id,items,format){const root=$(id);root.classList.remove('empty');root.replaceChildren();if(!items.length){root.append(el('div','empty','Nothing to show yet'));return;}items.forEach(item=>root.append(el('div','item',format(item))));}
+
+function fillCardSelect(select){
+  select.replaceChildren();
+  for(const list of board.lists){
+    const cards=board.cards.filter(c=>c.idList===list.id);
+    if(!cards.length)continue;
+    const group=document.createElement('optgroup');group.label=list.name;
+    cards.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;group.append(o);});
+    select.append(group);
+  }
+}
+async function loadBoard(refresh=false){
+  const info=$('board');
+  try{
+    const res=await fetch('/api/board'+(refresh?'?refresh=1':''));const data=await res.json();
+    if(data.mode==='trello'){
+      board=data.board;
+      fillCardSelect($('cardSelect'));fillCardSelect($('needsSelect'));
+      $('cardSelect').hidden=$('needsSelect').hidden=false;$('card').hidden=$('needs').hidden=true;
+      info.replaceChildren();
+      const left=el('span','');left.append('Trello board: ');const a=document.createElement('a');a.href=board.url;a.target='_blank';a.rel='noopener';a.textContent=board.name;left.append(a,` · ${board.cards.length} open cards in ${board.lists.length} lists`+(data.stale?' · showing last copy, Trello unreachable':''));
+      const btn=el('button','secondary','Refresh board');btn.style.cssText='padding:5px 10px;font-size:12px';btn.onclick=()=>loadBoard(true);
+      info.append(left,btn);
+      render();
+    } else if(data.mode==='demo'){
+      info.textContent='Demo mode: '+data.message;
+    } else {
+      info.textContent='Could not load the Trello board: '+(data.error||'unknown error')+'. Typed card IDs are accepted until it loads.';
+    }
+  }catch{info.textContent='Could not reach the hub to load the board.';}
+}
+
+function applyLimits(){
+  const L=state.limits||{};
+  const map={name:'name',card:'cardId',needs:'cardId',field:'field',message:'note'};
+  for(const [id,key] of Object.entries(map)) if(L[key]) $(id).maxLength=L[key];
+  updateCount();
+}
+function updateCount(){const n=$('name');$('nameCount').textContent=`${n.value.length}/${n.maxLength}`;}
+
+function renderRequests(){
+  const root=$('requests');root.replaceChildren();const list=state.collaborationRequests||[];
+  if(!list.length){root.append(el('div','empty','No collaboration requests'));return;}
+  list.forEach(r=>{
+    const row=el('div','row');
+    row.append(el('div','grow',`${r.requester} → ${r.owner} · ${cardLabel(r.cardId)} · ${r.status}${r.note?' · "'+r.note+'"':''}`));
+    if(r.status==='pending' && r.owner===me){
+      const respond=decision=>send('respond-collaboration',{requestId:r.id,decision});
+      const ok=el('button','approve','Approve');ok.onclick=()=>respond('approved');
+      const no=el('button','decline','Decline');no.onclick=()=>respond('declined');
+      const sp=el('button','split','Split work');
+      sp.onclick=()=>{
+        if(row.querySelector('.splitform'))return;
+        const max=state.limits?.work||160;
+        const form=el('div','splitform');
+        const mine=el('input','');mine.placeholder='Your part of the work';mine.maxLength=max;
+        const theirs=el('input','');theirs.placeholder=`${r.requester}'s part`;theirs.maxLength=max;
+        const go=el('button','split','Confirm split');
+        go.onclick=()=>send('respond-collaboration',{requestId:r.id,decision:'split',ownerWork:mine.value,collaboratorWork:theirs.value});
+        form.append(mine,theirs,go);row.append(form);mine.focus();
+      };
+      row.append(ok,no,sp);
+    }
+    root.append(row);
+  });
+}
+function renderSplits(){
+  const root=$('splits');root.replaceChildren();const list=state.workSplits||[];
+  if(!list.length){root.append(el('div','empty','No split work yet'));return;}
+  list.forEach(x=>{
+    const row=el('div','row');
+    row.append(el('div','grow',`${cardLabel(x.cardId)} · ${x.owner}: ${x.ownerWork} · ${x.collaborator}: ${x.collaboratorWork}`));
+    if(x.trelloCardUrl){const a=document.createElement('a');a.href=x.trelloCardUrl;a.target='_blank';a.rel='noopener';a.textContent='Open Trello card';row.append(a);}
+    else if(x.owner===me){
+      const b=el('button','split','Create Trello card');
+      b.onclick=()=>{if(confirm(`Create a new Trello card for ${x.collaborator}'s part? The original card is not changed.`))send('create-trello-split',{requestId:x.requestId,confirm:true});};
+      row.append(b);
+    }
+    root.append(row);
+  });
+}
+function render(){
+  renderList('people',state.participants,p=>`${p.name} (${p.role}) · ${p.cardId?cardLabel(p.cardId):'No card selected'}`);
+  renderList('claims',state.claims,c=>`${cardLabel(c.cardId)} · claimed by ${c.owner}`);
+  renderList('fields',state.fieldClaims||[],f=>`${cardLabel(f.cardId)} · ${f.field} · ${f.owner}`);
+  renderList('dependencies',[...(state.dependencies||[]),...(state.statuses||[])],d=>d.needs?`${cardLabel(d.cardId)} needs ${d.needs.map(cardLabel).join(', ')}`:`${cardLabel(d.cardId)}: ${d.status}`);
+  renderList('events',[...state.events].reverse().slice(0,25),e=>`${new Date(e.at).toLocaleTimeString()}  ${e.type}: ${e.detail}`);
+  renderRequests();renderSplits();
+}
+function connect(){
+  socket=new WebSocket(`ws://${location.host}/ws`);
+  socket.onopen=()=>{$('status').textContent='Connected to hub';$('status').className='tag';};
+  socket.onclose=()=>{me=null;$('status').textContent='Disconnected';$('status').className='tag error';};
+  socket.onmessage=({data})=>{const m=JSON.parse(data);
+    if(m.type==='state'){state=m.state;applyLimits();if(me===null&&pendingName&&state.participants.some(p=>p.name===pendingName)){me=pendingName;notice(`Connected as ${me}.`);}render();}
+    if(m.type==='conflict')notice('⚠ '+m.message,'warn');
+    if(m.type==='error'){pendingName=null;notice(m.message,'error');}
+    if(m.type==='info')notice(m.message);
+    if(m.type==='trello-split-created')notice(`Created Trello card: ${m.newCardUrl}`);
+  };
+}
+let pendingName=null;
+function send(type,extra={}){if(socket?.readyState!==1){notice('Not connected','error');return;}socket.send(JSON.stringify({type,...extra}));}
+$('name').oninput=updateCount;
+$('join').onclick=()=>{const name=$('name').value.trim();if(!name)return notice('Enter your name first','error');pendingName=name;send('join',{name});};
+$('claim').onclick=()=>send('claim',{cardId:cardValue()});
+// View card: open the real card in Trello, and tell the team which card you are looking at.
+$('focus').onclick=()=>{
+  const card=board?.cards.find(c=>c.id===cardValue());
+  if(card?.url){window.open(card.url,'_blank','noopener');notice(`Opened "${card.name}" in Trello.`);}
+  else if(board)notice('This card has no Trello link.','error');
+  else notice('Demo mode: no Trello board loaded, so there is no card to open.');
+  if(me)send('focus',{cardId:cardValue()});
+};
+$('release').onclick=()=>send('release',{cardId:cardValue()});
+$('claimfield').onclick=()=>send('claim-field',{cardId:cardValue(),field:$('field').value});
+$('releasefield').onclick=()=>send('release-field',{cardId:cardValue(),field:$('field').value});
+$('depends').onclick=()=>send('depends-on',{cardId:cardValue(),needs:needsValue()});
+$('done').onclick=()=>send('status',{cardId:cardValue(),status:'done'});
+$('request').onclick=()=>send('request-collaboration',{cardId:cardValue(),note:$('message').value});
+updateCount();loadBoard();connect();
+</script></body></html>

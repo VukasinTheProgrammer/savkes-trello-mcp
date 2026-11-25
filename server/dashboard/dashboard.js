@@ -123,8 +123,12 @@ function render(a) {
   if (f) {
     sprint.append(el('strong', SPRINT_STATUS_LABELS[f.status] || 'Unknown'));
     sprint.append(el('p', f.message || '', 'muted'));
-    sprint.append(row('Estimated remaining work', `${f.remainingHours} h`));
+    sprint.append(row('Estimated finish (working in parallel)', `${f.finishHours ?? f.remainingHours} h` +
+      (f.estimatedFinishDate ? ` · around ${f.estimatedFinishDate}` : '') +
+      (Number(f.missingEstimates) > 0 ? ` + ${f.missingEstimates} unestimated card(s)` : '')));
+    sprint.append(row('Total estimated work (all people)', `${f.remainingHours} h`));
     sprint.append(row('Cards without estimates', f.missingEstimates));
+    if (Number(f.unassignedCards) > 0) sprint.append(row('Estimated but unassigned', `${f.unassignedCards} card(s), ${f.unassignedHours} h`));
     if (f.capacityHours != null) {
       sprint.append(row('Available capacity', `${f.capacityHours} h (${f.workingDays} working days)`));
       sprint.append(row('Estimated shortfall', `${f.shortfallHours} h`));
@@ -158,6 +162,21 @@ function render(a) {
       sprintChart.append(line);
     }
     if (Number(f.missingEstimates) > 0) sprintChart.append(el('p', 'Some cards have no estimates. Capacity comparison is incomplete.', 'footnote'));
+  }
+  // Hours per person: the longest bar is when the team finishes.
+  if (f && Array.isArray(f.members) && f.members.length) {
+    sprintChart.append(el('h3', 'Estimated hours per person'));
+    const max = Math.max(1, ...f.members.map(m => Number(m.hours)));
+    for (const m of f.members) {
+      const line = el('div', '', 'chart-line');
+      const track = el('div', '', 'chart-track');
+      const fill = el('div', '', 'chart-fill');
+      fill.style.width = Math.max(0, Number(m.hours) / max * 100) + '%';
+      track.append(fill);
+      line.append(el('span', String(m.name ?? m.memberId), 'chart-name'), track, el('strong', `${m.hours} h`, 'chart-value'));
+      sprintChart.append(line);
+    }
+    sprintChart.append(el('p', 'People work at the same time, so the team is done when the busiest person is done.', 'footnote'));
   }
 
   // Recommendations

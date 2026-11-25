@@ -566,6 +566,8 @@ process.env.TRELLO_TOKEN = "ATTA${weird}";
 assert.match(authHeader(), /oauth_token="ATTA\$\{weird\}"/);
 process.env.TRELLO_TOKEN = "test-token";
 
+process.env.COLLAB_ENABLED = "false"
+
 const requests = [];
 const canned = (u, method) => {
   if (method === "GET" && /^\/1\/cards\/[^/]+$/.test(u.pathname)) {
@@ -2404,6 +2406,22 @@ assert.equal(sawSignal.aborted, false);
     if (realEnv === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = realEnv;
   }
+}
+
+globalThis.fetch = realFetch;
+
+// ---------------------------------------------------------------------------
+// Phase 2: collaboration client in standalone mode (COLLAB_ENABLED=false).
+// Hub-backed behaviour (conflicts, degraded mode, locks) is asserted in
+// field-locks.test.mjs, which mocks the hub.
+{
+  const { acquireFieldClaims, releaseFieldClaims, getFieldClaims } = await import('./collaboration-client.mjs');
+  assert.equal(process.env.COLLAB_ENABLED, 'false');
+  assert.deepEqual(await acquireFieldClaims('C1', ['name']), { ok: true, skipped: true });
+  // Standalone mode never claims, so a second "developer" on the same field also succeeds.
+  assert.deepEqual(await acquireFieldClaims('C1', ['name']), { ok: true, skipped: true });
+  assert.deepEqual(await releaseFieldClaims('C1', ['name']), { ok: true, skipped: true });
+  assert.deepEqual(await getFieldClaims('C1'), { ok: true, claims: {}, skipped: true });
 }
 
 globalThis.fetch = realFetch;

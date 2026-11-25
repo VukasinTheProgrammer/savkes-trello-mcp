@@ -149,6 +149,8 @@ export function auditHierarchy(cards) {
 
 export const TOOLS = {
   attachCard: {
+    claimResource: "cardId",
+    fieldLocks: { _: "attachments" },
     description:
       "Attach one Trello card to another as a linked attachment, rendered as a card " +
       "preview. Each id accepts a full https://trello.com/c/... URL, a bare shortLink, " +
@@ -219,6 +221,8 @@ export const TOOLS = {
   },
 
   placeCards: {
+    claimResource: "listId",
+    fieldLocks: { _: "cards" },
     description:
       "Move already-created cards into hierarchy order inside a list: place them " +
       "directly after the last card of `underNumber`'s subtree, in the order given. " +
@@ -438,6 +442,8 @@ export const TOOLS = {
   },
 
   repairCardHierarchy: {
+    claimResource: "boardId",
+    fieldLocks: { _: "hierarchy" },
     description:
       "Attach every card auditCardHierarchy reports as `missing` to its expected " +
       "parent, so the board's real links match the hierarchy its numbers imply. Fixes " +
@@ -516,6 +522,8 @@ export const TOOLS = {
   },
 
   detachCard: {
+    claimResource: "cardId",
+    fieldLocks: { _: "attachments" },
     description: "Delete an attachment from a card by attachment id.",
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
